@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: nothing (first task).
-- Produces: `npm test` (runs `node --test test/`) and `npm run typecheck` (runs `tsc -p tsconfig.json`) as the two commands every later task uses to verify its work. `src/index.js` exists as an empty ESM module that later tasks extend.
+- Produces: `npm test` (runs `node --test "test/**/*.test.js"`) and `npm run typecheck` (runs `tsc -p tsconfig.json`) as the two commands every later task uses to verify its work. `src/index.js` exists as an empty ESM module that later tasks extend.
 
 - [ ] **Step 1: Create `package.json`**
 
@@ -48,7 +48,7 @@
   "main": "src/index.js",
   "exports": "./src/index.js",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.js\"",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
