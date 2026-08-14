@@ -1764,6 +1764,35 @@ test('an engine load/play failure is caught and surfaced as an error event, not 
   assert.equal(errors[0].trackId, 't1');
 });
 
+test('a resume failure (engine.play() rejecting from paused) is caught and surfaced as an error event', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  await core.play();
+  await core.pause();
+  assert.equal(core.getState().status, 'paused');
+
+  engine.play = async () => { throw new Error('resume rejected'); };
+
+  const errors = [];
+  core.on('error', (payload) => errors.push(payload));
+
+  await assert.doesNotReject(() => core.play());
+
+  assert.equal(core.getState().status, 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].reason, 'resume rejected');
+  assert.equal(errors[0].trackId, 't1');
+});
+
 test('rebinding a previously-used playback engine does not register duplicate listeners', async () => {
   const core = new CorePlayer();
   const providerA = createMockSourceProvider({
@@ -1826,7 +1855,12 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
   async play() {
     if (this.#status === 'playing') return;
     if (this.#status === 'paused' && this.#activeEngine) {
-      await this.#activeEngine.play();
+      try {
+        await this.#activeEngine.play();
+      } catch (err) {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        return;
+      }
       this.#status = 'playing';
       this.emit('stateChanged');
       return;
@@ -1841,14 +1875,26 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
   /** @returns {Promise<void>} */
   async pause() {
     if (this.#status !== 'playing' || !this.#activeEngine) return;
-    await this.#activeEngine.pause();
+    try {
+      await this.#activeEngine.pause();
+    } catch (err) {
+      this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+      return;
+    }
     this.#status = 'paused';
     this.emit('stateChanged');
   }
 
   /** @returns {Promise<void>} */
   async stop() {
-    if (this.#activeEngine) await this.#activeEngine.stop();
+    if (this.#activeEngine) {
+      try {
+        await this.#activeEngine.stop();
+      } catch (err) {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
     this.#status = 'idle';
     this.#position = 0;
     this.emit('stateChanged');
@@ -1871,7 +1917,11 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
   /** @param {number} seconds @returns {Promise<void>} */
   async seek(seconds) {
     if (!this.#activeEngine || this.#status === 'idle' || this.#status === 'error') return;
-    await this.#activeEngine.seek(seconds);
+    try {
+      await this.#activeEngine.seek(seconds);
+    } catch (err) {
+      this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+    }
   }
 
   /** @returns {Promise<void>} */
@@ -1888,27 +1938,17 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
     try {
       resolved = await resolveTrack(queueItem.track, this.#policy, this.#registry.getSourceProviders());
     } catch (err) {
-      this.#status = 'error';
-      this.emit('error', {
-        queueItemId: queueItem.queueItemId,
-        trackId: queueItem.track.id,
-        reason: err instanceof TrackResolutionError ? 'resolution failed' : (err instanceof Error ? err.message : String(err)),
-        failedSources: err instanceof TrackResolutionError ? err.failedSources : [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(
+        queueItem,
+        err instanceof TrackResolutionError ? 'resolution failed' : (err instanceof Error ? err.message : String(err)),
+        err instanceof TrackResolutionError ? err.failedSources : []
+      );
       return;
     }
 
     const engine = this.#registry.getPlaybackEngineFor(resolved);
     if (!engine) {
-      this.#status = 'error';
-      this.emit('error', {
-        queueItemId: queueItem.queueItemId,
-        trackId: queueItem.track.id,
-        reason: 'no playback engine registered for resolved source',
-        failedSources: [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(queueItem, 'no playback engine registered for resolved source');
       return;
     }
 
@@ -1917,14 +1957,7 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
       await engine.load(resolved);
       await engine.play();
     } catch (err) {
-      this.#status = 'error';
-      this.emit('error', {
-        queueItemId: queueItem.queueItemId,
-        trackId: queueItem.track.id,
-        reason: err instanceof Error ? err.message : String(err),
-        failedSources: [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
       return;
     }
     this.#status = 'playing';
@@ -1961,16 +1994,25 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
     });
 
     engine.on('error', (error) => {
-      this.#status = 'error';
-      const queueItem = this.queue.getCurrentItem();
-      this.emit('error', {
-        queueItemId: queueItem?.queueItemId,
-        trackId: queueItem?.track.id,
-        reason: error instanceof Error ? error.message : String(error),
-        failedSources: [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(this.queue.getCurrentItem(), error instanceof Error ? error.message : String(error));
     });
+  }
+
+  /**
+   * @param {import('./types.js').QueueItem | undefined} queueItem
+   * @param {string} reason
+   * @param {Array<{ pluginId: string, sourceId: string, reason: string }>} [failedSources]
+   * @returns {void}
+   */
+  #emitError(queueItem, reason, failedSources = []) {
+    this.#status = 'error';
+    this.emit('error', {
+      queueItemId: queueItem?.queueItemId,
+      trackId: queueItem?.track.id,
+      reason,
+      failedSources,
+    });
+    this.emit('stateChanged');
   }
 ```
 
