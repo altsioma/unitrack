@@ -492,3 +492,85 @@ test('pause() issued during an in-flight play() still ends up paused', async () 
   assert.equal(engine.playCalls, 1);
   assert.equal(engine.pauseCalls, 1);
 });
+
+test('removing the currently-playing item stops playback and returns to idle', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.play();
+
+  const current = core.getState().currentQueueItem;
+  core.queue.remove(current.queueItemId);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().status, 'idle');
+  assert.equal(engine.stopCalls, 1);
+});
+
+test('clearing the queue during playback stops playback and returns to idle', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  await core.play();
+
+  core.queue.clear();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().status, 'idle');
+  assert.equal(engine.stopCalls, 1);
+});
+
+test('reordering the queue during playback does not interrupt it', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.play();
+
+  const current = core.getState().currentQueueItem;
+  core.queue.reorder(current.queueItemId, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().status, 'playing');
+  assert.equal(engine.stopCalls, 0);
+});
+
+test('normal next() navigation is unaffected by reconciliation', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.play();
+
+  await core.next();
+
+  assert.equal(core.getState().status, 'playing');
+  assert.equal(core.getState().currentQueueItem.track.id, 't2');
+  assert.equal(engine.stopCalls, 0);
+});

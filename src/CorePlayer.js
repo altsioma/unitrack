@@ -23,10 +23,18 @@ export class CorePlayer extends EventEmitter {
   #boundEngines = new Set();
   /** @type {Promise<void>} */
   #operationChain = Promise.resolve();
+  /** @type {string | undefined} */
+  #loadedQueueItemId;
 
   constructor() {
     super();
-    this.queue.on('changed', () => this.emit('queueChanged'));
+    this.queue.on('changed', () => {
+      this.emit('queueChanged');
+      const loadedId = this.#loadedQueueItemId;
+      if (loadedId && !this.queue.getItems().some((i) => i.queueItemId === loadedId)) {
+        this.#enqueue(() => this.#reconcileMissingCurrentItem(loadedId));
+      }
+    });
   }
 
   /** @param {import('./types.js').SourceProvider} plugin @returns {void} */
@@ -168,6 +176,7 @@ export class CorePlayer extends EventEmitter {
         return;
       }
     }
+    this.#loadedQueueItemId = undefined;
     this.#status = 'idle';
     this.#position = 0;
     this.emit('stateChanged');
@@ -201,6 +210,7 @@ export class CorePlayer extends EventEmitter {
   async #loadAndPlayCurrent() {
     const queueItem = this.queue.getCurrentItem();
     if (!queueItem) return;
+    this.#loadedQueueItemId = queueItem.queueItemId;
 
     this.#status = 'loading';
     this.#position = 0;
@@ -244,9 +254,20 @@ export class CorePlayer extends EventEmitter {
     if (moved) {
       await this.#loadAndPlayCurrent();
     } else {
+      this.#loadedQueueItemId = undefined;
       this.#status = 'idle';
       this.emit('stateChanged');
     }
+  }
+
+  /**
+   * @param {string} missingQueueItemId
+   * @returns {Promise<void>}
+   */
+  async #reconcileMissingCurrentItem(missingQueueItemId) {
+    if (this.#loadedQueueItemId !== missingQueueItemId) return;
+    if (this.queue.getItems().some((i) => i.queueItemId === missingQueueItemId)) return;
+    await this.#stop();
   }
 
   /** @param {import('./types.js').PlaybackEngine} engine @returns {void} */
@@ -286,6 +307,7 @@ export class CorePlayer extends EventEmitter {
    * @returns {void}
    */
   #emitError(queueItem, reason, failedSources = []) {
+    this.#loadedQueueItemId = undefined;
     this.#status = 'error';
     this.emit('error', {
       queueItemId: queueItem?.queueItemId,
