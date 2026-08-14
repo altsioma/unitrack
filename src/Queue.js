@@ -83,22 +83,18 @@ export class QueueManager extends EventEmitter {
 
   /** @returns {boolean} */
   moveNext() {
-    const couldMove = this.#currentIndex + 1 < this.#items.length;
-    if (couldMove) {
-      this.#currentIndex += 1;
-    }
+    if (this.#currentIndex + 1 >= this.#items.length) return false;
+    this.#currentIndex += 1;
     this.emit('changed');
-    return couldMove;
+    return true;
   }
 
   /** @returns {boolean} */
   movePrevious() {
-    const couldMove = this.#currentIndex > 0;
-    if (couldMove) {
-      this.#currentIndex -= 1;
-    }
+    if (this.#currentIndex <= 0) return false;
+    this.#currentIndex -= 1;
     this.emit('changed');
-    return couldMove;
+    return true;
   }
 
   /**
