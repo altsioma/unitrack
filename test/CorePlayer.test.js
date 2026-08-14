@@ -431,3 +431,51 @@ test('rebinding a previously-used playback engine does not register duplicate li
   assert.equal(engineA._listenerCount('ended'), 1);
   assert.equal(engineA._listenerCount('error'), 1);
 });
+
+test('concurrent next() calls resolve in order rather than racing', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([
+    trackWithLocalSource('t1', 'l1'),
+    trackWithLocalSource('t2', 'l2'),
+    trackWithLocalSource('t3', 'l3'),
+  ]);
+  await core.play();
+
+  const trackChanged = [];
+  core.on('trackChanged', (item) => trackChanged.push(item.track.id));
+
+  await Promise.all([core.next(), core.next()]);
+
+  assert.equal(core.getState().currentQueueItem.track.id, 't3');
+  assert.deepEqual(engine.loaded, { url: 'file:///l3.flac' });
+  assert.deepEqual(trackChanged, ['t2', 't3']);
+});
+
+test('pause() issued during an in-flight play() still ends up paused', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  const playPromise = core.play();
+  const pausePromise = core.pause();
+  await Promise.all([playPromise, pausePromise]);
+
+  assert.equal(core.getState().status, 'paused');
+  assert.equal(engine.playCalls, 1);
+  assert.equal(engine.pauseCalls, 1);
+});

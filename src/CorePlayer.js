@@ -21,6 +21,8 @@ export class CorePlayer extends EventEmitter {
   #activeEngine;
   /** @type {Set<import('./types.js').PlaybackEngine>} */
   #boundEngines = new Set();
+  /** @type {Promise<void>} */
+  #operationChain = Promise.resolve();
 
   constructor() {
     super();
@@ -83,6 +85,47 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async play() {
+    return this.#enqueue(() => this.#play());
+  }
+
+  /** @returns {Promise<void>} */
+  async pause() {
+    return this.#enqueue(() => this.#pause());
+  }
+
+  /** @returns {Promise<void>} */
+  async stop() {
+    return this.#enqueue(() => this.#stop());
+  }
+
+  /** @returns {Promise<void>} */
+  async next() {
+    return this.#enqueue(() => this.#next());
+  }
+
+  /** @returns {Promise<void>} */
+  async prev() {
+    return this.#enqueue(() => this.#prev());
+  }
+
+  /** @param {number} seconds @returns {Promise<void>} */
+  async seek(seconds) {
+    return this.#enqueue(() => this.#seek(seconds));
+  }
+
+  /**
+   * @template T
+   * @param {() => Promise<T>} operation
+   * @returns {Promise<T>}
+   */
+  #enqueue(operation) {
+    const result = this.#operationChain.then(operation, operation);
+    this.#operationChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /** @returns {Promise<void>} */
+  async #play() {
     if (this.#status === 'playing') return;
     if (this.#status === 'paused' && this.#activeEngine) {
       try {
@@ -103,7 +146,7 @@ export class CorePlayer extends EventEmitter {
   }
 
   /** @returns {Promise<void>} */
-  async pause() {
+  async #pause() {
     if (this.#status !== 'playing' || !this.#activeEngine) return;
     try {
       await this.#activeEngine.pause();
@@ -116,7 +159,7 @@ export class CorePlayer extends EventEmitter {
   }
 
   /** @returns {Promise<void>} */
-  async stop() {
+  async #stop() {
     if (this.#activeEngine) {
       try {
         await this.#activeEngine.stop();
@@ -131,21 +174,21 @@ export class CorePlayer extends EventEmitter {
   }
 
   /** @returns {Promise<void>} */
-  async next() {
+  async #next() {
     const moved = this.queue.moveNext();
     if (!moved) return;
     await this.#loadAndPlayCurrent();
   }
 
   /** @returns {Promise<void>} */
-  async prev() {
+  async #prev() {
     const moved = this.queue.movePrevious();
     if (!moved) return;
     await this.#loadAndPlayCurrent();
   }
 
   /** @param {number} seconds @returns {Promise<void>} */
-  async seek(seconds) {
+  async #seek(seconds) {
     if (!this.#activeEngine || this.#status === 'idle' || this.#status === 'error') return;
     try {
       await this.#activeEngine.seek(seconds);
@@ -195,6 +238,17 @@ export class CorePlayer extends EventEmitter {
     this.emit('stateChanged');
   }
 
+  /** @returns {Promise<void>} */
+  async #advanceOnEnded() {
+    const moved = this.queue.moveNext();
+    if (moved) {
+      await this.#loadAndPlayCurrent();
+    } else {
+      this.#status = 'idle';
+      this.emit('stateChanged');
+    }
+  }
+
   /** @param {import('./types.js').PlaybackEngine} engine @returns {void} */
   #bindEngine(engine) {
     this.#activeEngine = engine;
@@ -215,15 +269,9 @@ export class CorePlayer extends EventEmitter {
     });
 
     engine.on('ended', () => {
-      const moved = this.queue.moveNext();
-      if (moved) {
-        this.#loadAndPlayCurrent().catch((err) => {
-          this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
-        });
-      } else {
-        this.#status = 'idle';
-        this.emit('stateChanged');
-      }
+      this.#enqueue(() => this.#advanceOnEnded()).catch((err) => {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+      });
     });
 
     engine.on('error', (error) => {
