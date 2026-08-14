@@ -574,3 +574,30 @@ test('normal next() navigation is unaffected by reconciliation', async () => {
   assert.equal(core.getState().currentQueueItem.track.id, 't2');
   assert.equal(engine.stopCalls, 0);
 });
+
+test('restoreState on an already-active instance does not leave a stale loaded-item reference', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  await core.play();
+
+  core.restoreState({
+    status: 'idle',
+    currentQueueItem: undefined,
+    position: 42,
+    duration: 0,
+    queue: [],
+    policy: [],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().position, 42);
+  assert.equal(engine.stopCalls, 0);
+});

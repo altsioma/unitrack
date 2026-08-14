@@ -86,6 +86,7 @@ export class CorePlayer extends EventEmitter {
       : -1;
     this.queue.setCurrentIndex(originalIndex);
     this.#policy = snapshot.policy ?? [];
+    this.#loadedQueueItemId = undefined;
     this.#status = 'idle';
     this.#position = snapshot.position ?? 0;
     this.#duration = snapshot.duration ?? 0;
