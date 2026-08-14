@@ -13,7 +13,7 @@ export function createMockSourceProvider({ id, kind, resolveImpl, canResolveImpl
 
 /**
  * @param {{ id?: string, canPlayImpl?: (resolved: import('../../src/types.js').ResolvedSource) => boolean }} [config]
- * @returns {import('../../src/types.js').PlaybackEngine & { loaded: any, playCalls: number, pauseCalls: number, stopCalls: number, seekCalls: number[], _simulate: (event: string, payload?: any) => void }}
+ * @returns {import('../../src/types.js').PlaybackEngine & { loaded: any, playCalls: number, pauseCalls: number, stopCalls: number, seekCalls: number[], _simulate: (event: string, payload?: any) => void, _listenerCount: (event: string) => number }}
  */
 export function createMockPlaybackEngine({ id, canPlayImpl } = {}) {
   /** @type {Map<string, Set<Function>>} */
@@ -38,6 +38,9 @@ export function createMockPlaybackEngine({ id, canPlayImpl } = {}) {
     },
     _simulate(event, payload) {
       for (const handler of listeners.get(event) ?? []) handler(payload);
+    },
+    _listenerCount(event) {
+      return listeners.get(event)?.size ?? 0;
     },
   };
 }

@@ -19,6 +19,8 @@ export class CorePlayer extends EventEmitter {
   #duration = 0;
   /** @type {import('./types.js').PlaybackEngine | undefined} */
   #activeEngine;
+  /** @type {Set<import('./types.js').PlaybackEngine>} */
+  #boundEngines = new Set();
 
   constructor() {
     super();
@@ -170,8 +172,20 @@ export class CorePlayer extends EventEmitter {
     }
 
     this.#bindEngine(engine);
-    await engine.load(resolved);
-    await engine.play();
+    try {
+      await engine.load(resolved);
+      await engine.play();
+    } catch (err) {
+      this.#status = 'error';
+      this.emit('error', {
+        queueItemId: queueItem.queueItemId,
+        trackId: queueItem.track.id,
+        reason: err instanceof Error ? err.message : String(err),
+        failedSources: [],
+      });
+      this.emit('stateChanged');
+      return;
+    }
     this.#status = 'playing';
     this.emit('trackChanged', queueItem);
     this.emit('stateChanged');
@@ -179,8 +193,9 @@ export class CorePlayer extends EventEmitter {
 
   /** @param {import('./types.js').PlaybackEngine} engine @returns {void} */
   #bindEngine(engine) {
-    if (this.#activeEngine === engine) return;
     this.#activeEngine = engine;
+    if (this.#boundEngines.has(engine)) return;
+    this.#boundEngines.add(engine);
 
     const POSITION_THROTTLE_MS = 250;
     let lastEmit = 0;
