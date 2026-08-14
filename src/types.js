@@ -18,4 +18,26 @@
  * @property {LogicalTrack} track
  */
 
+/**
+ * @typedef {Object} ResolvedSource
+ * @property {string} url
+ * @property {string} [format]
+ * @property {number} [bitrate]
+ */
+
+/**
+ * @typedef {Object} SourcePolicyRule
+ * @property {string} [kind]
+ * @property {string} [pluginId]
+ */
+
+/**
+ * @typedef {Object} SourceProvider
+ * @property {string} id
+ * @property {string} kind
+ * @property {(ref: SourceRef) => boolean} canResolve
+ * @property {(ref: SourceRef) => Promise<ResolvedSource>} resolve
+ * @property {() => Promise<void>} [dispose]
+ */
+
 export {};
