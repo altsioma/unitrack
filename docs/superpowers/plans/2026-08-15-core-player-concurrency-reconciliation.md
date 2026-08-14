@@ -36,9 +36,23 @@ Append to `test/CorePlayer.test.js` (after the existing last test, `'engine erro
 ```js
 test('concurrent next() calls resolve in order rather than racing', async () => {
   const core = new CorePlayer();
+  // The first resolve (for t2) is deliberately slower than the second (for
+  // t3). With trivially-resolving mocks of identical shape, two overlapping
+  // next() calls happen to complete in start order even without a
+  // concurrency guard, which would make this test pass regardless of
+  // whether serialization exists. The asymmetric delay forces the second
+  // call to actually be capable of finishing first in the absence of
+  // serialization, so this test can actually fail without the fix.
+  let resolveCount = 0;
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => {
+      resolveCount += 1;
+      if (resolveCount === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return { url: `file:///${ref.sourceId}.flac` };
+    },
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -86,7 +100,7 @@ test('pause() issued during an in-flight play() still ends up paused', async () 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `npm test`
-Expected: the two new tests FAIL. `'concurrent next() calls resolve in order...'` fails because without serialization the two `next()` calls race (the assertion on `trackChanged` order or `engine.loaded` will not reliably match — the exact failure may vary run to run, which is itself the symptom being fixed). `'pause() issued during an in-flight play()...'` fails because today's `pause()` no-ops when `status !== 'playing'`, so the final status stays `'playing'`, not `'paused'`.
+Expected: the two new tests FAIL. `'concurrent next() calls resolve in order...'` fails deterministically: without serialization, the second `next()` call's resolve (no delay) completes and finishes loading/playing t3 before the first call's resolve (20ms delay) completes and finishes loading/playing t2, so the first call's later completion clobbers the engine's loaded state back to t2 and fires `trackChanged` out of order (`['t3', 't2']`) — `engine.loaded` ends up `{ url: 'file:///l2.flac' }`, not `l3.flac`, and the assertions fail. `'pause() issued during an in-flight play()...'` fails because today's `pause()` no-ops when `status !== 'playing'`, so the final status stays `'playing'`, not `'paused'`.
 
 - [ ] **Step 3: Rename the existing public methods to private, and add the operation queue**
 
