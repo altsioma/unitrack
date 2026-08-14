@@ -36,19 +36,18 @@ Append to `test/CorePlayer.test.js` (after the existing last test, `'engine erro
 ```js
 test('concurrent next() calls resolve in order rather than racing', async () => {
   const core = new CorePlayer();
-  // The first resolve (for t2) is deliberately slower than the second (for
-  // t3). With trivially-resolving mocks of identical shape, two overlapping
-  // next() calls happen to complete in start order even without a
-  // concurrency guard, which would make this test pass regardless of
-  // whether serialization exists. The asymmetric delay forces the second
-  // call to actually be capable of finishing first in the absence of
-  // serialization, so this test can actually fail without the fix.
-  let resolveCount = 0;
+  // The resolve for t2's source (l2) is deliberately slower than t3's
+  // (l3). With trivially-resolving mocks of identical shape, two
+  // overlapping next() calls happen to complete in start order even
+  // without a concurrency guard, which would make this test pass
+  // regardless of whether serialization exists. The delay is keyed to
+  // l2's sourceId specifically (not a call counter) so it only affects
+  // the race itself, not the earlier play() call that resolves t1/l1
+  // during setup.
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
     resolveImpl: async (ref) => {
-      resolveCount += 1;
-      if (resolveCount === 1) {
+      if (ref.sourceId === 'l2') {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       return { url: `file:///${ref.sourceId}.flac` };
