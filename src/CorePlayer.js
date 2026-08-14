@@ -85,7 +85,12 @@ export class CorePlayer extends EventEmitter {
   async play() {
     if (this.#status === 'playing') return;
     if (this.#status === 'paused' && this.#activeEngine) {
-      await this.#activeEngine.play();
+      try {
+        await this.#activeEngine.play();
+      } catch (err) {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        return;
+      }
       this.#status = 'playing';
       this.emit('stateChanged');
       return;
@@ -100,14 +105,26 @@ export class CorePlayer extends EventEmitter {
   /** @returns {Promise<void>} */
   async pause() {
     if (this.#status !== 'playing' || !this.#activeEngine) return;
-    await this.#activeEngine.pause();
+    try {
+      await this.#activeEngine.pause();
+    } catch (err) {
+      this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+      return;
+    }
     this.#status = 'paused';
     this.emit('stateChanged');
   }
 
   /** @returns {Promise<void>} */
   async stop() {
-    if (this.#activeEngine) await this.#activeEngine.stop();
+    if (this.#activeEngine) {
+      try {
+        await this.#activeEngine.stop();
+      } catch (err) {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
     this.#status = 'idle';
     this.#position = 0;
     this.emit('stateChanged');
@@ -130,7 +147,11 @@ export class CorePlayer extends EventEmitter {
   /** @param {number} seconds @returns {Promise<void>} */
   async seek(seconds) {
     if (!this.#activeEngine || this.#status === 'idle' || this.#status === 'error') return;
-    await this.#activeEngine.seek(seconds);
+    try {
+      await this.#activeEngine.seek(seconds);
+    } catch (err) {
+      this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+    }
   }
 
   /** @returns {Promise<void>} */
@@ -147,27 +168,17 @@ export class CorePlayer extends EventEmitter {
     try {
       resolved = await resolveTrack(queueItem.track, this.#policy, this.#registry.getSourceProviders());
     } catch (err) {
-      this.#status = 'error';
-      this.emit('error', {
-        queueItemId: queueItem.queueItemId,
-        trackId: queueItem.track.id,
-        reason: err instanceof TrackResolutionError ? 'resolution failed' : (err instanceof Error ? err.message : String(err)),
-        failedSources: err instanceof TrackResolutionError ? err.failedSources : [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(
+        queueItem,
+        err instanceof TrackResolutionError ? 'resolution failed' : (err instanceof Error ? err.message : String(err)),
+        err instanceof TrackResolutionError ? err.failedSources : []
+      );
       return;
     }
 
     const engine = this.#registry.getPlaybackEngineFor(resolved);
     if (!engine) {
-      this.#status = 'error';
-      this.emit('error', {
-        queueItemId: queueItem.queueItemId,
-        trackId: queueItem.track.id,
-        reason: 'no playback engine registered for resolved source',
-        failedSources: [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(queueItem, 'no playback engine registered for resolved source');
       return;
     }
 
@@ -176,14 +187,7 @@ export class CorePlayer extends EventEmitter {
       await engine.load(resolved);
       await engine.play();
     } catch (err) {
-      this.#status = 'error';
-      this.emit('error', {
-        queueItemId: queueItem.queueItemId,
-        trackId: queueItem.track.id,
-        reason: err instanceof Error ? err.message : String(err),
-        failedSources: [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
       return;
     }
     this.#status = 'playing';
@@ -220,15 +224,24 @@ export class CorePlayer extends EventEmitter {
     });
 
     engine.on('error', (error) => {
-      this.#status = 'error';
-      const queueItem = this.queue.getCurrentItem();
-      this.emit('error', {
-        queueItemId: queueItem?.queueItemId,
-        trackId: queueItem?.track.id,
-        reason: error instanceof Error ? error.message : String(error),
-        failedSources: [],
-      });
-      this.emit('stateChanged');
+      this.#emitError(this.queue.getCurrentItem(), error instanceof Error ? error.message : String(error));
     });
+  }
+
+  /**
+   * @param {import('./types.js').QueueItem | undefined} queueItem
+   * @param {string} reason
+   * @param {Array<{ pluginId: string, sourceId: string, reason: string }>} [failedSources]
+   * @returns {void}
+   */
+  #emitError(queueItem, reason, failedSources = []) {
+    this.#status = 'error';
+    this.emit('error', {
+      queueItemId: queueItem?.queueItemId,
+      trackId: queueItem?.track.id,
+      reason,
+      failedSources,
+    });
+    this.emit('stateChanged');
   }
 }

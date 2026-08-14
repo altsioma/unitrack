@@ -380,6 +380,35 @@ test('an engine load/play failure is caught and surfaced as an error event, not 
   assert.equal(errors[0].reason, 'device busy');
 });
 
+test('a resume failure (engine.play() rejecting from paused) is caught and surfaced as an error event', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  await core.play();
+  await core.pause();
+  assert.equal(core.getState().status, 'paused');
+
+  engine.play = async () => { throw new Error('resume rejected'); };
+
+  const errors = [];
+  core.on('error', (payload) => errors.push(payload));
+
+  await assert.doesNotReject(() => core.play());
+
+  assert.equal(core.getState().status, 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].reason, 'resume rejected');
+  assert.equal(errors[0].trackId, 't1');
+});
+
 test('rebinding a previously-used playback engine does not register duplicate listeners', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
