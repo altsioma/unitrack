@@ -102,4 +102,18 @@
  * @property {() => Promise<PlaylistSummary[]>} [listPlaylists]
  */
 
+/**
+ * @typedef {'idle' | 'loading' | 'playing' | 'paused' | 'error'} PlayerStatus
+ */
+
+/**
+ * @typedef {Object} CoreState
+ * @property {PlayerStatus} status
+ * @property {QueueItem | undefined} currentQueueItem
+ * @property {number} position
+ * @property {number} duration
+ * @property {QueueItem[]} queue
+ * @property {SourcePolicyRule[]} policy
+ */
+
 export {};
