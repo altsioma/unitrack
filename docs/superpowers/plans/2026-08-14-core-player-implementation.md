@@ -1442,6 +1442,7 @@ git commit -m "feat: add CorePlayer skeleton with registration, state snapshot, 
 **Files:**
 - Modify: `src/CorePlayer.js` (add playback methods and engine binding)
 - Modify: `test/CorePlayer.test.js` (append playback orchestration tests)
+- Modify: `test/helpers/mockPlugins.js` (append a `_listenerCount(event)` introspection method to `createMockPlaybackEngine`, purely for testing the engine-rebind fix below — does not change its existing shape for Tasks 5/6 consumers)
 
 **Interfaces:**
 - Consumes:
@@ -1738,6 +1739,62 @@ test('engine error event during playback stops and emits error', async () => {
   assert.equal(errors[0].reason, 'device disconnected');
   assert.equal(errors[0].trackId, 't1');
 });
+
+test('an engine load/play failure is caught and surfaced as an error event, not a rejection', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  engine.load = async () => { throw new Error('device busy'); };
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  const errors = [];
+  core.on('error', (payload) => errors.push(payload));
+
+  await assert.doesNotReject(() => core.play());
+
+  assert.equal(core.getState().status, 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].reason, 'device busy');
+  assert.equal(errors[0].trackId, 't1');
+});
+
+test('rebinding a previously-used playback engine does not register duplicate listeners', async () => {
+  const core = new CorePlayer();
+  const providerA = createMockSourceProvider({
+    id: 'engine-a-src', kind: 'local',
+    resolveImpl: async () => ({ url: 'a', engine: 'A' }),
+  });
+  const providerB = createMockSourceProvider({
+    id: 'engine-b-src', kind: 'local',
+    resolveImpl: async () => ({ url: 'b', engine: 'B' }),
+  });
+  const engineA = createMockPlaybackEngine({ id: 'engine-a', canPlayImpl: (r) => r.engine === 'A' });
+  const engineB = createMockPlaybackEngine({ id: 'engine-b', canPlayImpl: (r) => r.engine === 'B' });
+  core.registerSourceProvider(providerA);
+  core.registerSourceProvider(providerB);
+  core.registerPlaybackEngine(engineA);
+  core.registerPlaybackEngine(engineB);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([
+    makeTrack('t1', [{ pluginId: 'engine-a-src', sourceId: 'a1', kind: 'local' }]),
+    makeTrack('t2', [{ pluginId: 'engine-b-src', sourceId: 'b1', kind: 'local' }]),
+    makeTrack('t3', [{ pluginId: 'engine-a-src', sourceId: 'a2', kind: 'local' }]),
+  ]);
+
+  await core.play();
+  await core.next();
+  await core.next();
+
+  assert.equal(engineA._listenerCount('ended'), 1);
+  assert.equal(engineA._listenerCount('progress'), 1);
+  assert.equal(engineA._listenerCount('error'), 1);
+});
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1753,11 +1810,13 @@ Add this import to the top of `src/CorePlayer.js`:
 import { resolveTrack, TrackResolutionError } from './Resolver.js';
 ```
 
-Add this private field next to the existing ones in the `CorePlayer` class body:
+Add these private fields next to the existing ones in the `CorePlayer` class body:
 
 ```js
   /** @type {import('./types.js').PlaybackEngine | undefined} */
   #activeEngine;
+  /** @type {Set<import('./types.js').PlaybackEngine>} */
+  #boundEngines = new Set();
 ```
 
 Add these methods to the `CorePlayer` class body (after `restoreState`):
@@ -1854,8 +1913,20 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
     }
 
     this.#bindEngine(engine);
-    await engine.load(resolved);
-    await engine.play();
+    try {
+      await engine.load(resolved);
+      await engine.play();
+    } catch (err) {
+      this.#status = 'error';
+      this.emit('error', {
+        queueItemId: queueItem.queueItemId,
+        trackId: queueItem.track.id,
+        reason: err instanceof Error ? err.message : String(err),
+        failedSources: [],
+      });
+      this.emit('stateChanged');
+      return;
+    }
     this.#status = 'playing';
     this.emit('trackChanged', queueItem);
     this.emit('stateChanged');
@@ -1863,8 +1934,9 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
 
   /** @param {import('./types.js').PlaybackEngine} engine @returns {void} */
   #bindEngine(engine) {
-    if (this.#activeEngine === engine) return;
     this.#activeEngine = engine;
+    if (this.#boundEngines.has(engine)) return;
+    this.#boundEngines.add(engine);
 
     const POSITION_THROTTLE_MS = 250;
     let lastEmit = 0;
@@ -1900,6 +1972,14 @@ Add these methods to the `CorePlayer` class body (after `restoreState`):
       this.emit('stateChanged');
     });
   }
+```
+
+Add a `_listenerCount(event)` method to the object returned by `createMockPlaybackEngine` in `test/helpers/mockPlugins.js` (alongside the existing `_simulate` method — do not change anything else in that function):
+
+```js
+    _listenerCount(event) {
+      return listeners.get(event)?.size ?? 0;
+    },
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
