@@ -458,19 +458,20 @@ test('setCurrentIndex(-1) is valid and clears the current item', () => {
   assert.equal(queue.getCurrentItem(), undefined);
 });
 
-test('emits changed on every mutating operation', () => {
+test('emits changed only when an operation actually mutates the queue', () => {
   const queue = new QueueManager();
   let fired = 0;
   queue.on('changed', () => { fired += 1; });
   const [item] = queue.add(makeTrack('a'));
   queue.add(makeTrack('b'));
   queue.moveNext();
+  // movePrevious() is a no-op here (already at index 0) — it must not emit.
   queue.movePrevious();
   queue.setCurrentIndex(1);
   queue.reorder(item.queueItemId, 1);
   queue.remove(item.queueItemId);
   queue.clear();
-  assert.equal(fired, 8);
+  assert.equal(fired, 7);
 });
 ```
 
