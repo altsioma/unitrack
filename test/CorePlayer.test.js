@@ -356,6 +356,40 @@ test('engine error event during playback stops and emits error', async () => {
   assert.equal(errors[0].trackId, 't1');
 });
 
+test('an engine error that arrives mid-load does not permanently disable reconciliation', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  let releaseLoad;
+  const originalLoad = engine.load.bind(engine);
+  engine.load = async (resolved) => {
+    await new Promise((resolve) => { releaseLoad = resolve; });
+    return originalLoad(resolved);
+  };
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+
+  const playPromise = core.play();
+  await new Promise((resolve) => setImmediate(resolve));
+  engine._simulate('error', new Error('transient'));
+  releaseLoad();
+  await playPromise;
+
+  assert.equal(core.getState().status, 'playing');
+
+  const current = core.getState().currentQueueItem;
+  core.queue.remove(current.queueItemId);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().status, 'idle');
+  assert.equal(engine.stopCalls, 1);
+});
+
 test('an engine load/play failure is caught and surfaced as an error event, not a rejection', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
@@ -549,6 +583,26 @@ test('reordering the queue during playback does not interrupt it', async () => {
 
   const current = core.getState().currentQueueItem;
   core.queue.reorder(current.queueItemId, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().status, 'playing');
+  assert.equal(engine.stopCalls, 0);
+});
+
+test('a direct queue.setCurrentIndex() pointer jump does not interrupt playback', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.play();
+
+  core.queue.setCurrentIndex(1);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(core.getState().status, 'playing');

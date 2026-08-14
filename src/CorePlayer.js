@@ -244,6 +244,7 @@ export class CorePlayer extends EventEmitter {
       this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
       return;
     }
+    this.#loadedQueueItemId = queueItem.queueItemId;
     this.#status = 'playing';
     this.emit('trackChanged', queueItem);
     this.emit('stateChanged');
