@@ -302,7 +302,7 @@ git commit -m "feat: serialize CorePlayer playback operations through a single q
 
 **Interfaces:**
 - Consumes: `#enqueue(operation)` and the private `#play()`/`#pause()`/`#stop()`/`#next()`/`#prev()`/`#seek()`/`#advanceOnEnded()` methods from Task 1. Consumes the existing `#loadAndPlayCurrent()`, `#emitError(queueItem, reason, failedSources)`, and the constructor's `queue.on('changed', ...)` subscription (currently only re-emitting `queueChanged`).
-- Produces: a new `#loadedQueueItemId` field (the invariant: truthy only while `#status` is `'loading'`, `'playing'`, or `'paused'` — cleared on every transition to `'idle'` or `'error'`); `#reconcileMissingCurrentItem(missingQueueItemId)`. No public API changes.
+- Produces: a new `#loadedQueueItemId` field (the invariant: truthy only while `#status` is `'loading'`, `'playing'`, or `'paused'` — cleared at every one of the four sites that transition `#status` to `'idle'` or `'error'`: `#stop()`, `#emitError()`, `#advanceOnEnded()`'s idle branch, and `restoreState()`); `#reconcileMissingCurrentItem(missingQueueItemId)`. No public API changes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -390,12 +390,39 @@ test('normal next() navigation is unaffected by reconciliation', async () => {
   assert.equal(core.getState().currentQueueItem.track.id, 't2');
   assert.equal(engine.stopCalls, 0);
 });
+
+test('restoreState on an already-active instance does not leave a stale loaded-item reference', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  await core.play();
+
+  core.restoreState({
+    status: 'idle',
+    currentQueueItem: undefined,
+    position: 42,
+    duration: 0,
+    queue: [],
+    policy: [],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().position, 42);
+  assert.equal(engine.stopCalls, 0);
+});
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `npm test`
-Expected: the four new tests FAIL. The first two fail because nothing today reacts to `queue.remove()`/`queue.clear()` — status stays `'playing'` and `engine.stopCalls` stays `0`. The other two should already pass even before this task's implementation (they assert the *absence* of a reaction) — that's expected; they exist to guard against a future regression, and TDD's RED step for them is trivially satisfied (no code changes needed for them to pass, but running them now provides a baseline).
+Expected: two of the five new tests FAIL, three pass already. `'removing the currently-playing item...'` and `'clearing the queue during playback...'` fail because nothing today reacts to `queue.remove()`/`queue.clear()` — status stays `'playing'` and `engine.stopCalls` stays `0`. `'reordering the queue during playback...'`, `'normal next() navigation...'`, and `'restoreState on an already-active instance...'` should already pass even before this task's implementation, since none of them exercise a reaction that doesn't exist yet — they exist to guard against a future regression (the last one specifically guards against a subtle bug where `restoreState()` could later be implemented without clearing `#loadedQueueItemId`, which Step 5 below implements correctly from the start; if you find yourself implementing Step 5 without the `restoreState()` clear-site and this test starts failing, that's it catching exactly that mistake).
 
 - [ ] **Step 3: Add the `#loadedQueueItemId` field**
 
@@ -499,6 +526,49 @@ Change to:
     }
   }
 ```
+
+`restoreState()` also transitions `#status` to `'idle'` and must clear the field too — it is the fourth and last clear-site. Find:
+
+```js
+  restoreState(snapshot) {
+    this.queue.clear();
+    for (const item of snapshot.queue ?? []) {
+      this.queue.add(item.track);
+    }
+    const currentQueueItem = snapshot.currentQueueItem;
+    const originalIndex = currentQueueItem
+      ? snapshot.queue.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId)
+      : -1;
+    this.queue.setCurrentIndex(originalIndex);
+    this.#policy = snapshot.policy ?? [];
+    this.#status = 'idle';
+    this.#position = snapshot.position ?? 0;
+    this.#duration = snapshot.duration ?? 0;
+  }
+```
+
+Change to:
+
+```js
+  restoreState(snapshot) {
+    this.queue.clear();
+    for (const item of snapshot.queue ?? []) {
+      this.queue.add(item.track);
+    }
+    const currentQueueItem = snapshot.currentQueueItem;
+    const originalIndex = currentQueueItem
+      ? snapshot.queue.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId)
+      : -1;
+    this.queue.setCurrentIndex(originalIndex);
+    this.#policy = snapshot.policy ?? [];
+    this.#loadedQueueItemId = undefined;
+    this.#status = 'idle';
+    this.#position = snapshot.position ?? 0;
+    this.#duration = snapshot.duration ?? 0;
+  }
+```
+
+Without this, calling `restoreState()` on an already-active `CorePlayer` (status `loading`/`playing`/`paused`) leaves `#loadedQueueItemId` pointing at the pre-restore item. `restoreState()`'s own `queue.clear()`/`add()`/`setCurrentIndex()` calls fire `'changed'` synchronously, and since `#enqueue` always schedules asynchronously (never synchronously, even against an already-settled chain), the resulting reconciliation check only runs *after* `restoreState()`'s synchronous body has finished — so clearing the field as the last thing `restoreState()` does is sufficient: by the time the enqueued `#reconcileMissingCurrentItem` callback actually executes, `#loadedQueueItemId` is already `undefined`, its `!== missingQueueItemId` check is true, and it correctly no-ops instead of calling `#stop()` and clobbering the just-restored `#position`.
 
 This keeps the invariant intact everywhere `#status` transitions to `'idle'` or `'error'`: `#loadedQueueItemId` is `undefined` whenever nothing is actively loading, playing, or paused.
 
