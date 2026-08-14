@@ -203,7 +203,8 @@ export class CorePlayer extends EventEmitter {
 
     const POSITION_THROTTLE_MS = 250;
     let lastEmit = 0;
-    engine.on('progress', ({ position, duration }) => {
+    engine.on('progress', (payload) => {
+      const { position = 0, duration = 0 } = payload ?? {};
       this.#position = position;
       this.#duration = duration;
       const now = Date.now();
@@ -216,7 +217,9 @@ export class CorePlayer extends EventEmitter {
     engine.on('ended', () => {
       const moved = this.queue.moveNext();
       if (moved) {
-        this.#loadAndPlayCurrent();
+        this.#loadAndPlayCurrent().catch((err) => {
+          this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        });
       } else {
         this.#status = 'idle';
         this.emit('stateChanged');
