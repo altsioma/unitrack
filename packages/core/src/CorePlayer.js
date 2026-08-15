@@ -230,7 +230,14 @@ export class CorePlayer extends EventEmitter {
       return;
     }
 
-    const engine = this.#registry.getPlaybackEngineFor(resolved);
+    /** @type {import('./types.js').PlaybackEngine | undefined} */
+    let engine;
+    try {
+      engine = this.#registry.getPlaybackEngineFor(resolved);
+    } catch (err) {
+      this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
+      return;
+    }
     if (!engine) {
       this.#emitError(queueItem, 'no playback engine registered for resolved source');
       return;

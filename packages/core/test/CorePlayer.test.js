@@ -150,6 +150,32 @@ test('play emits an error when no registered engine can play the resolved source
   assert.equal(errors[0].reason, 'no playback engine registered for resolved source');
 });
 
+test('a throwing canPlay() surfaces as an error event instead of leaving status stuck at loading', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({
+    id: 'web-audio',
+    canPlayImpl: () => { throw new Error('codec probe failed'); },
+  });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  const errors = [];
+  core.on('error', (payload) => errors.push(payload));
+
+  await assert.doesNotReject(() => core.play());
+
+  assert.equal(core.getState().status, 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].trackId, 't1');
+  assert.equal(errors[0].reason, 'codec probe failed');
+});
+
 test('pause and resume do not re-resolve or reload the track', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
