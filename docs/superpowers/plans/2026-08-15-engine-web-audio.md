@@ -157,7 +157,12 @@ export function createFakeAudioElement() {
 /** @returns {any} */
 export function createFakeAudioContext() {
   return {
+    /** @type {'running' | 'suspended' | 'closed'} */
+    state: 'running',
     destination: {},
+    async resume() {
+      this.state = 'running';
+    },
     /** @param {any} audioElement */
     createMediaElementSource(audioElement) {
       return {
@@ -196,6 +201,7 @@ export function asConstructor(instance) {
 ```js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { createWebAudioPlaybackEngine } from '../src/index.js';
 import { createFakeAudioElement, createFakeAudioContext, asConstructor } from './helpers/domStubs.js';
 
@@ -342,6 +348,55 @@ test('getAudioGraphAnchor returns the media element source node connected to the
   assert.equal(anchor.audioElement, audio);
   assert.equal(anchor.connectedTo, audioContext.destination);
 });
+
+test('a media error during load() does not also fire the persistent error handler', async () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  const errors = [];
+  engine.on('error', (err) => errors.push(err));
+  const loadPromise = engine.load({ url: 'file:///broken.mp3' });
+  audio._simulateError(4);
+  await assert.rejects(() => loadPromise);
+  assert.equal(errors.length, 0);
+});
+
+test('a media error outside of a load still fires the persistent error handler', () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  const errors = [];
+  engine.on('error', (err) => errors.push(err));
+  audio._simulateError(2);
+  assert.equal(errors.length, 1);
+});
+
+test('load() does not leak canplay/error listeners across repeated calls', async () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  for (let i = 0; i < 5; i += 1) {
+    const loadPromise = engine.load({ url: `file:///track-${i}.mp3` });
+    audio._simulateCanPlay(100);
+    await loadPromise;
+  }
+  assert.equal(getEventListeners(audio, 'canplay').length, 0);
+  assert.equal(getEventListeners(audio, 'error').length, 0);
+});
+
+test('play resumes a suspended audio context before playing', async () => {
+  const audio = createFakeAudioElement();
+  const audioContext = createFakeAudioContext();
+  audioContext.state = 'suspended';
+  let resumeCalled = false;
+  const originalResume = audioContext.resume.bind(audioContext);
+  audioContext.resume = async () => {
+    resumeCalled = true;
+    await originalResume();
+  };
+  const { engine } = makeEngine(audio, audioContext);
+  await engine.play();
+  assert.equal(resumeCalled, true);
+  assert.equal(audioContext.state, 'running');
+  assert.equal(audio.paused, false);
+});
 ```
 
 - [ ] **Step 5: Run the tests to verify they fail**
@@ -398,6 +453,12 @@ export function createWebAudioPlaybackEngine({
   audio.addEventListener('waiting', () => { buffering = true; });
   audio.addEventListener('playing', () => { buffering = false; });
 
+  // True while a load() call is in flight. Suppresses the persistent
+  // on('error') forwarder below so a media error during a load doesn't
+  // produce two error reports for the same failure — one from this
+  // forwarder and one from load()'s own rejection.
+  let loading = false;
+
   return {
     id: 'web-audio',
 
@@ -419,16 +480,26 @@ export function createWebAudioPlaybackEngine({
     async load(resolved) {
       audio.src = resolved.url;
       audio.load();
-      await /** @type {Promise<void>} */ (
-        new Promise((resolve, reject) => {
-          audio.addEventListener('canplay', () => resolve(), { once: true });
-          audio.addEventListener('error', () => reject(mapMediaError(audio.error)), { once: true });
-        })
-      );
+      loading = true;
+      const controller = new AbortController();
+      try {
+        await /** @type {Promise<void>} */ (
+          new Promise((resolve, reject) => {
+            audio.addEventListener('canplay', () => resolve(), { signal: controller.signal });
+            audio.addEventListener('error', () => reject(mapMediaError(audio.error)), { signal: controller.signal });
+          })
+        );
+      } finally {
+        loading = false;
+        controller.abort();
+      }
     },
 
     /** @returns {Promise<void>} */
     async play() {
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
       await audio.play();
     },
 
@@ -473,7 +544,9 @@ export function createWebAudioPlaybackEngine({
       } else if (event === 'ended') {
         audio.addEventListener('ended', () => handler());
       } else if (event === 'error') {
-        audio.addEventListener('error', () => handler(mapMediaError(audio.error)));
+        audio.addEventListener('error', () => {
+          if (!loading) handler(mapMediaError(audio.error));
+        });
       }
     },
 
@@ -487,10 +560,12 @@ export function createWebAudioPlaybackEngine({
 
 Three spots needed explicit typing to satisfy `tsc --checkJs --strict` (the same class of issue found in `source-local-fs`'s plan — code that hadn't been run through the real type-checker before being written into the plan): `MEDIA_ERROR_MESSAGES`/`FORMAT_MIME_TYPES` need `Record<number, string>`/`Record<string, string>` annotations, since indexing a plain object literal with a non-literal `number`/`string` key (`error.code`, `resolved.format`) is flagged as implicit-any without one; and the `new Promise((resolve, reject) => {...})` in `load()` needs an explicit `/** @type {Promise<void>} */` cast, since calling `resolve()` with no arguments across two separate `addEventListener` registrations doesn't let `tsc` infer `Promise<void>` on its own.
 
+This `load()`/`on('error', ...)`/`play()` shape (the `loading` flag, the `AbortController`, and the `audioContext.state === 'suspended'` check) reflects three fixes a final whole-branch review found and the controller applied, verified against three failure modes traced end-to-end through a real `CorePlayer` + this engine: (1) a media error during a load produced two separate `error` reports to `CorePlayer` — one from the persistent `on('error')` forwarder, one from `load()`'s own rejection — for the same underlying failure; (2) `load()`'s internal `'canplay'`/`'error'` listeners were registered with `{ once: true }`, which only removes whichever one actually fires, so the other leaked forever, one pair per track played; (3) `play()` never checked `audioContext.state`, so a browser starting the context `'suspended'` (its default before a user gesture) made the engine report successful playback — `status: 'playing'`, a ticking position — while producing no sound at all, with no error for a host to catch.
+
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `npm test -w @unitrack/engine-web-audio`
-Expected: PASS — all 15 tests pass.
+Expected: PASS — all 19 tests pass.
 
 - [ ] **Step 8: Run the typecheck**
 
@@ -500,7 +575,7 @@ Expected: no errors. If `import('@unitrack/core/types').X` fails to resolve, re-
 - [ ] **Step 9: Verify the whole workspace still passes from the root**
 
 Run: `npm test` and `npm run typecheck` from the repo root.
-Expected: both delegate into every workspace package (`@unitrack/core`, `@unitrack/source-local-fs`, `@unitrack/engine-web-audio`) and pass — 79 prior tests plus 15 new ones, zero typecheck errors across all three packages.
+Expected: both delegate into every workspace package (`@unitrack/core`, `@unitrack/source-local-fs`, `@unitrack/engine-web-audio`) and pass — 79 prior tests plus 19 new ones, zero typecheck errors across all three packages.
 
 - [ ] **Step 10: Commit**
 
