@@ -354,6 +354,7 @@ Expected: FAIL — `Cannot find module '../src/index.js'`.
 `packages/engine-web-audio/src/index.js`:
 
 ```js
+/** @type {Record<number, string>} */
 const MEDIA_ERROR_MESSAGES = {
   1: 'MEDIA_ERR_ABORTED: fetching process aborted by the user',
   2: 'MEDIA_ERR_NETWORK: a network error occurred while fetching the media',
@@ -370,6 +371,7 @@ function mapMediaError(error) {
   return new Error(MEDIA_ERROR_MESSAGES[error.code] ?? `MediaError code ${error.code}`);
 }
 
+/** @type {Record<string, string>} */
 const FORMAT_MIME_TYPES = {
   mp3: 'audio/mpeg',
   wav: 'audio/wav',
@@ -417,10 +419,12 @@ export function createWebAudioPlaybackEngine({
     async load(resolved) {
       audio.src = resolved.url;
       audio.load();
-      await new Promise((resolve, reject) => {
-        audio.addEventListener('canplay', () => resolve(), { once: true });
-        audio.addEventListener('error', () => reject(mapMediaError(audio.error)), { once: true });
-      });
+      await /** @type {Promise<void>} */ (
+        new Promise((resolve, reject) => {
+          audio.addEventListener('canplay', () => resolve(), { once: true });
+          audio.addEventListener('error', () => reject(mapMediaError(audio.error)), { once: true });
+        })
+      );
     },
 
     /** @returns {Promise<void>} */
@@ -480,6 +484,8 @@ export function createWebAudioPlaybackEngine({
   };
 }
 ```
+
+Three spots needed explicit typing to satisfy `tsc --checkJs --strict` (the same class of issue found in `source-local-fs`'s plan — code that hadn't been run through the real type-checker before being written into the plan): `MEDIA_ERROR_MESSAGES`/`FORMAT_MIME_TYPES` need `Record<number, string>`/`Record<string, string>` annotations, since indexing a plain object literal with a non-literal `number`/`string` key (`error.code`, `resolved.format`) is flagged as implicit-any without one; and the `new Promise((resolve, reject) => {...})` in `load()` needs an explicit `/** @type {Promise<void>} */` cast, since calling `resolve()` with no arguments across two separate `addEventListener` registrations doesn't let `tsc` infer `Promise<void>` on its own.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
