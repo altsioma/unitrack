@@ -12,6 +12,8 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.mjs'),
     },
   });
   win.loadFile(path.join(__dirname, 'index.html'));
