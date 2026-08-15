@@ -42,6 +42,12 @@ export function createWebAudioPlaybackEngine({
   audio.addEventListener('waiting', () => { buffering = true; });
   audio.addEventListener('playing', () => { buffering = false; });
 
+  // True while a load() call is in flight. Suppresses the persistent
+  // on('error') forwarder below so a media error during a load doesn't
+  // produce two error reports for the same failure — one from this
+  // forwarder and one from load()'s own rejection.
+  let loading = false;
+
   return {
     id: 'web-audio',
 
@@ -63,16 +69,26 @@ export function createWebAudioPlaybackEngine({
     async load(resolved) {
       audio.src = resolved.url;
       audio.load();
-      await /** @type {Promise<void>} */ (
-        new Promise((resolve, reject) => {
-          audio.addEventListener('canplay', () => resolve(), { once: true });
-          audio.addEventListener('error', () => reject(mapMediaError(audio.error)), { once: true });
-        })
-      );
+      loading = true;
+      const controller = new AbortController();
+      try {
+        await /** @type {Promise<void>} */ (
+          new Promise((resolve, reject) => {
+            audio.addEventListener('canplay', () => resolve(), { signal: controller.signal });
+            audio.addEventListener('error', () => reject(mapMediaError(audio.error)), { signal: controller.signal });
+          })
+        );
+      } finally {
+        loading = false;
+        controller.abort();
+      }
     },
 
     /** @returns {Promise<void>} */
     async play() {
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
       await audio.play();
     },
 
@@ -117,7 +133,9 @@ export function createWebAudioPlaybackEngine({
       } else if (event === 'ended') {
         audio.addEventListener('ended', () => handler());
       } else if (event === 'error') {
-        audio.addEventListener('error', () => handler(mapMediaError(audio.error)));
+        audio.addEventListener('error', () => {
+          if (!loading) handler(mapMediaError(audio.error));
+        });
       }
     },
 

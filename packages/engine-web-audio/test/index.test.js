@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { createWebAudioPlaybackEngine } from '../src/index.js';
 import { createFakeAudioElement, createFakeAudioContext, asConstructor } from './helpers/domStubs.js';
 
@@ -145,4 +146,53 @@ test('getAudioGraphAnchor returns the media element source node connected to the
   const anchor = engine.getAudioGraphAnchor();
   assert.equal(anchor.audioElement, audio);
   assert.equal(anchor.connectedTo, audioContext.destination);
+});
+
+test('a media error during load() does not also fire the persistent error handler', async () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  const errors = [];
+  engine.on('error', (err) => errors.push(err));
+  const loadPromise = engine.load({ url: 'file:///broken.mp3' });
+  audio._simulateError(4);
+  await assert.rejects(() => loadPromise);
+  assert.equal(errors.length, 0);
+});
+
+test('a media error outside of a load still fires the persistent error handler', () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  const errors = [];
+  engine.on('error', (err) => errors.push(err));
+  audio._simulateError(2);
+  assert.equal(errors.length, 1);
+});
+
+test('load() does not leak canplay/error listeners across repeated calls', async () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  for (let i = 0; i < 5; i += 1) {
+    const loadPromise = engine.load({ url: `file:///track-${i}.mp3` });
+    audio._simulateCanPlay(100);
+    await loadPromise;
+  }
+  assert.equal(getEventListeners(audio, 'canplay').length, 0);
+  assert.equal(getEventListeners(audio, 'error').length, 0);
+});
+
+test('play resumes a suspended audio context before playing', async () => {
+  const audio = createFakeAudioElement();
+  const audioContext = createFakeAudioContext();
+  audioContext.state = 'suspended';
+  let resumeCalled = false;
+  const originalResume = audioContext.resume.bind(audioContext);
+  audioContext.resume = async () => {
+    resumeCalled = true;
+    await originalResume();
+  };
+  const { engine } = makeEngine(audio, audioContext);
+  await engine.play();
+  assert.equal(resumeCalled, true);
+  assert.equal(audioContext.state, 'running');
+  assert.equal(audio.paused, false);
 });

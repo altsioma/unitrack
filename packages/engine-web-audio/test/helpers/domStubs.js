@@ -66,7 +66,12 @@ export function createFakeAudioElement() {
 /** @returns {any} */
 export function createFakeAudioContext() {
   return {
+    /** @type {'running' | 'suspended' | 'closed'} */
+    state: 'running',
     destination: {},
+    async resume() {
+      this.state = 'running';
+    },
     /** @param {any} audioElement */
     createMediaElementSource(audioElement) {
       return {
