@@ -1,4 +1,4 @@
-import { access, constants } from 'node:fs/promises';
+import { access, constants, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { extname } from 'node:path';
 
@@ -20,6 +20,10 @@ export function createLocalFileSourceProvider() {
      */
     async resolve(ref) {
       await access(ref.sourceId, constants.R_OK);
+      const stats = await stat(ref.sourceId);
+      if (!stats.isFile()) {
+        throw new Error(`Not a regular file: ${ref.sourceId}`);
+      }
       const url = pathToFileURL(ref.sourceId).href;
       const ext = extname(ref.sourceId).slice(1).toLowerCase();
       const resolved = /** @type {import('@unitrack/core/types').ResolvedSource} */ ({ url });

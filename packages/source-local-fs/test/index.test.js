@@ -54,3 +54,19 @@ test('resolve rejects for a nonexistent path', async () => {
     }
   );
 });
+
+test('resolve rejects when sourceId points at a directory', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'unitrack-source-local-fs-'));
+  try {
+    const provider = createLocalFileSourceProvider();
+    await assert.rejects(
+      () => provider.resolve({ pluginId: 'local-fs', sourceId: dir, kind: 'local' }),
+      (err) => {
+        assert.ok(err instanceof Error);
+        return true;
+      }
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
