@@ -49,11 +49,14 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@types/node": "^18",
     "@unitrack/core": "^0.1.0",
     "typescript": "^5.5.4"
   }
 }
 ```
+
+`@types/node` is required here (and wasn't needed for `packages/core`) because `packages/core/src/` never imports a Node built-in module by design (the core stays platform-agnostic), while this package's `src/index.js` imports `node:fs/promises`/`node:url`/`node:path` directly — `tsc --checkJs` needs the type declarations to resolve those imports.
 
 - [ ] **Step 2: Create `tsconfig.json`**
 
@@ -175,13 +178,15 @@ export function createLocalFileSourceProvider() {
       await access(ref.sourceId, constants.R_OK);
       const url = pathToFileURL(ref.sourceId).href;
       const ext = extname(ref.sourceId).slice(1).toLowerCase();
-      const resolved = { url };
+      const resolved = /** @type {import('@unitrack/core/types').ResolvedSource} */ ({ url });
       if (ext) resolved.format = ext;
       return resolved;
     },
   };
 }
 ```
+
+Note the `/** @type {...} */ (...)` cast on `resolved`: without it, TypeScript infers `resolved`'s type from the initializer literal as `{ url: string }`, and the following `resolved.format = ext;` would fail `tsc --checkJs --strict` (property `format` doesn't exist on that narrower inferred type). Casting to the full `ResolvedSource` type up front (where `format` is a valid optional property) fixes this without changing behavior.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
