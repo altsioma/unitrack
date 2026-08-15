@@ -36,8 +36,19 @@ export class EventEmitter {
    * @returns {void}
    */
   emit(event, payload) {
-    for (const handler of this.#listeners.get(event) ?? []) {
-      handler(payload);
+    const handlers = this.#listeners.get(event);
+    if (!handlers) return;
+    /** @type {unknown[]} */
+    const errors = [];
+    for (const handler of handlers) {
+      try {
+        handler(payload);
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `${errors.length} listener(s) for '${event}' threw`);
     }
   }
 }
