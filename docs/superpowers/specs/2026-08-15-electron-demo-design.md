@@ -49,14 +49,31 @@ One Electron API still requires the main process regardless of
 to let renderers call this directly was removed from Electron years ago).
 So one IPC round-trip is unavoidable no matter which process model is
 chosen — `main.js` registers `ipcMain.handle('open-file-dialog', ...)`,
-`renderer.js` calls `ipcRenderer.invoke('open-file-dialog')`.
+`preload.mjs` calls `ipcRenderer.invoke('open-file-dialog')`.
 
-**Everything else lives in the renderer.** `CorePlayer` is constructed in
-`renderer.js`, an ES module (`<script type="module">`), which Electron's
-renderer supports natively with Node-style bare-specifier resolution when
-`nodeIntegration` is enabled — so `import { CorePlayer } from
-'@unitrack/core'` resolves through the workspace's `node_modules`
-symlinks exactly as it would in a plain Node script.
+**Everything else lives in an unsandboxed ESM preload script, not a
+`<script type="module">` in the page.** An earlier draft of this spec
+assumed `nodeIntegration: true` would let a page-level `<script
+type="module">` resolve bare specifiers (`@unitrack/core`) and `node:`
+builtins via Node-style resolution. That assumption is wrong: renderer
+`<script type="module">` tags are always resolved by Chromium's own ESM
+loader, which has no concept of `node_modules` or the `node:` scheme,
+regardless of `nodeIntegration`. `nodeIntegration: true` only injects
+Node globals (`require`, `process`, ...) into the page's own context for
+classic (non-module) scripts — it does not redirect the module loader.
+
+The correct place for `CorePlayer` construction is an **ESM preload
+script** (`preload.mjs` — the `.mjs` extension is required; Electron
+ignores `"type": "module"` for preload files). Preload scripts are loaded
+through Node's own ESM loader, so bare specifiers and `node:` builtins
+resolve normally there. `main.js` points `webPreferences.preload` at it
+and sets `sandbox: false` (a sandboxed preload cannot use static ESM
+imports at all). With `contextIsolation: false`, the preload script
+shares the same JavaScript realm as the page — so code in `preload.mjs`
+can add DOM event listeners and mutate the page directly, exactly as a
+page-level script would, once it runs after `DOMContentLoaded` (the
+preload script executes before the HTML body exists, so DOM lookups must
+be deferred to that event).
 
 ## Package
 
@@ -66,7 +83,7 @@ apps/electron-demo/
 ├── tsconfig.json
 ├── main.js
 ├── index.html
-└── renderer.js
+└── preload.mjs
 ```
 
 The root `package.json`'s `"workspaces"` field changes from
@@ -85,21 +102,27 @@ the launcher/runtime, not a library the app's code is distributed with).
 ## Wiring
 
 `main.js`: creates a `BrowserWindow` with `webPreferences: {
-nodeIntegration: true, contextIsolation: false }`, loads `index.html`, and
-handles `'open-file-dialog'` over IPC via `dialog.showOpenDialog` filtered
-to common audio extensions.
+nodeIntegration: true, contextIsolation: false, sandbox: false, preload:
+<path to preload.mjs> }`, loads `index.html`, and handles
+`'open-file-dialog'` over IPC via `dialog.showOpenDialog` filtered to
+common audio extensions.
 
-`renderer.js`: constructs one `CorePlayer`, registers
-`createLocalFileSourceProvider()` and `createWebAudioPlaybackEngine()`,
-sets policy to `[{ kind: 'local' }]`. On "Open File": invokes the IPC
-dialog, and if a path was picked, clears the queue, adds a single
-`LogicalTrack` whose one `SourceRef` points at that path
-(`{ pluginId: 'local-fs', sourceId: filePath, kind: 'local' }`), and calls
-`core.play()`. Play/Pause/Stop buttons call `core.play()`/`pause()`/`stop()`
-directly. A status line subscribes to `core.on('stateChanged'/'trackChanged',
-...)` to show the current status and track title, and to `core.on('error',
-...)` to surface failures visibly — nothing fails silently, consistent
-with the rest of this project.
+`preload.mjs`: on `DOMContentLoaded`, constructs one `CorePlayer`,
+registers `createLocalFileSourceProvider()` and
+`createWebAudioPlaybackEngine()`, sets policy to `[{ kind: 'local' }]`. On
+"Open File": invokes the IPC dialog, and if a path was picked, clears the
+queue, adds a single `LogicalTrack` whose one `SourceRef` points at that
+path (`{ pluginId: 'local-fs', sourceId: filePath, kind: 'local' }`), and
+calls `core.play()`. Play/Pause/Stop buttons call
+`core.play()`/`pause()`/`stop()` directly. A status line subscribes to
+`core.on('stateChanged'/'trackChanged', ...)` to show the current status
+and track title, and to `core.on('error', ...)` to surface failures
+visibly — nothing fails silently, consistent with the rest of this
+project. The last error's reason (and any `failedSources` detail) is held
+in a variable and re-rendered whenever the status is `'error'`, since
+`CorePlayer` emits `'error'` immediately followed by `'stateChanged'` —
+without this, the generic status text overwrites the specific reason in
+the same tick.
 
 ## Testing
 
@@ -111,7 +134,7 @@ is to be the first real-world check that the pipeline produces audible
 sound, which no mock/stub-based automated test could verify. `npm
 run typecheck` still applies for consistency with every other package in
 this monorepo (`tsc --checkJs --strict`, `"lib": ["ES2022", "DOM"]` plus
-`@types/node`, since `main.js` is pure Node and `renderer.js` is a
+`@types/node`, since `main.js` is pure Node and `preload.mjs` is a
 Node+DOM hybrid).
 
 ## Non-goals
