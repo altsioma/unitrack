@@ -44,3 +44,36 @@ test('events are isolated from each other', () => {
   emitter.emit('foo');
   assert.deepEqual(calls, ['foo']);
 });
+
+test('a throwing handler does not prevent later handlers for the same event from running', () => {
+  const emitter = new EventEmitter();
+  const calls = [];
+  emitter.on('foo', () => { throw new Error('first handler is broken'); });
+  emitter.on('foo', () => calls.push('second ran'));
+  assert.throws(() => emitter.emit('foo'));
+  assert.deepEqual(calls, ['second ran']);
+});
+
+test('emit throws an AggregateError containing every handler that threw, after all handlers have run', () => {
+  const emitter = new EventEmitter();
+  const errA = new Error('a broke');
+  const errB = new Error('b broke');
+  const calls = [];
+  emitter.on('foo', () => { calls.push('a'); throw errA; });
+  emitter.on('foo', () => { calls.push('b'); throw errB; });
+  emitter.on('foo', () => calls.push('c'));
+
+  assert.throws(() => emitter.emit('foo'), (err) => {
+    assert.ok(err instanceof AggregateError);
+    assert.deepEqual(err.errors, [errA, errB]);
+    return true;
+  });
+  assert.deepEqual(calls, ['a', 'b', 'c']);
+});
+
+test('emit does not throw when no handler throws', () => {
+  const emitter = new EventEmitter();
+  emitter.on('foo', () => {});
+  emitter.on('foo', () => {});
+  assert.doesNotThrow(() => emitter.emit('foo'));
+});

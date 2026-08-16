@@ -74,8 +74,24 @@ export class CorePlayer extends EventEmitter {
     };
   }
 
-  /** @param {import('./types.js').CoreState} snapshot @returns {void} */
-  restoreState(snapshot) {
+  /** @param {import('./types.js').CoreState} snapshot @returns {Promise<void>} */
+  async restoreState(snapshot) {
+    return this.#enqueue(() => this.#restoreState(snapshot));
+  }
+
+  /** @param {import('./types.js').CoreState} snapshot @returns {Promise<void>} */
+  async #restoreState(snapshot) {
+    this.#loadedQueueItemId = undefined;
+    if (this.#activeEngine) {
+      try {
+        await this.#activeEngine.stop();
+      } catch (err) {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
+    this.#activeEngine = undefined;
+
     this.queue.clear();
     for (const item of snapshot.queue ?? []) {
       this.queue.add(item.track);
@@ -86,10 +102,10 @@ export class CorePlayer extends EventEmitter {
       : -1;
     this.queue.setCurrentIndex(originalIndex);
     this.#policy = snapshot.policy ?? [];
-    this.#loadedQueueItemId = undefined;
     this.#status = 'idle';
     this.#position = snapshot.position ?? 0;
     this.#duration = snapshot.duration ?? 0;
+    this.emit('stateChanged');
   }
 
   /** @returns {Promise<void>} */
@@ -230,7 +246,14 @@ export class CorePlayer extends EventEmitter {
       return;
     }
 
-    const engine = this.#registry.getPlaybackEngineFor(resolved);
+    /** @type {import('./types.js').PlaybackEngine | undefined} */
+    let engine;
+    try {
+      engine = this.#registry.getPlaybackEngineFor(resolved);
+    } catch (err) {
+      this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
+      return;
+    }
     if (!engine) {
       this.#emitError(queueItem, 'no playback engine registered for resolved source');
       return;

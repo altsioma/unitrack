@@ -45,14 +45,14 @@ test('getState reflects the queue, policy, and default idle status', () => {
   assert.equal(state.duration, 0);
 });
 
-test('restoreState rebuilds the queue in order and preserves the current item', () => {
+test('restoreState rebuilds the queue in order and preserves the current item', async () => {
   const core = new CorePlayer();
   core.queue.add([makeTrack('t1'), makeTrack('t2')]);
   core.queue.setCurrentIndex(1);
   const snapshot = core.getState();
 
   const restored = new CorePlayer();
-  restored.restoreState(snapshot);
+  await restored.restoreState(snapshot);
   const restoredState = restored.getState();
   assert.equal(restoredState.queue.length, 2);
   assert.equal(restoredState.queue[0].track.id, 't1');
@@ -62,13 +62,13 @@ test('restoreState rebuilds the queue in order and preserves the current item', 
   assert.equal(restoredState.status, 'idle');
 });
 
-test('restoreState with no current item leaves the queue unselected', () => {
+test('restoreState with no current item leaves the queue unselected', async () => {
   const core = new CorePlayer();
   core.queue.add(makeTrack('t1'));
   const snapshot = core.getState();
 
   const restored = new CorePlayer();
-  restored.restoreState(snapshot);
+  await restored.restoreState(snapshot);
   assert.equal(restored.getState().currentQueueItem, undefined);
 });
 
@@ -148,6 +148,32 @@ test('play emits an error when no registered engine can play the resolved source
 
   assert.equal(core.getState().status, 'error');
   assert.equal(errors[0].reason, 'no playback engine registered for resolved source');
+});
+
+test('a throwing canPlay() surfaces as an error event instead of leaving status stuck at loading', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({
+    id: 'web-audio',
+    canPlayImpl: () => { throw new Error('codec probe failed'); },
+  });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  const errors = [];
+  core.on('error', (payload) => errors.push(payload));
+
+  await assert.doesNotReject(() => core.play());
+
+  assert.equal(core.getState().status, 'error');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].trackId, 't1');
+  assert.equal(errors[0].reason, 'codec probe failed');
 });
 
 test('pause and resume do not re-resolve or reload the track', async () => {
@@ -652,6 +678,91 @@ test('restoreState on an already-active instance does not leave a stale loaded-i
   });
   await new Promise((resolve) => setImmediate(resolve));
 
+  // Before this task, restoreState() never stopped the active engine at
+  // all (the bug this task fixes) — 0 was the old, wrong expectation.
+  // Now restoreState() stops it exactly once, itself; this asserts that
+  // reconciliation doesn't *also* fire a second, spurious stop on top of
+  // that intentional one.
   assert.equal(core.getState().position, 42);
-  assert.equal(engine.stopCalls, 0);
+  assert.equal(engine.stopCalls, 1);
+});
+
+test('restoreState() stops the active engine', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  await core.play();
+
+  await core.restoreState({
+    status: 'idle', currentQueueItem: undefined, position: 0, duration: 0, queue: [], policy: [],
+  });
+
+  assert.equal(engine.stopCalls, 1);
+  assert.equal(core.getState().status, 'idle');
+});
+
+test('restoreState() is serialized against an in-flight play()', async () => {
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { url: 'file:///a.flac' };
+    },
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  const core = new CorePlayer();
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  const playPromise = core.play();
+  const snapshot = { status: 'idle', currentQueueItem: undefined, position: 7, duration: 0, queue: [], policy: [] };
+  const restorePromise = core.restoreState(snapshot);
+  await Promise.all([playPromise, restorePromise]);
+
+  // restoreState() only runs after play() has fully finished loading and
+  // playing t1 — so it stops the now-active engine and ends up idle with
+  // the restored (empty) queue and position, not a hybrid of both calls.
+  assert.equal(core.getState().status, 'idle');
+  assert.equal(core.getState().position, 7);
+  assert.equal(core.getState().queue.length, 0);
+  assert.equal(engine.stopCalls, 1);
+});
+
+test('restoreState() does not trigger a spurious reconciliation stop during the rebuild', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  await core.play();
+
+  // Restoring a snapshot with several items exercises multiple
+  // intermediate queue.add() calls (and their 'changed' events) during
+  // the rebuild, while the pre-restore #loadedQueueItemId is still (very
+  // briefly, before this fix) capable of going stale mid-loop.
+  await core.restoreState({
+    status: 'idle',
+    currentQueueItem: undefined,
+    position: 0,
+    duration: 0,
+    queue: [makeTrack('r1'), makeTrack('r2'), makeTrack('r3')],
+    policy: [],
+  });
+
+  assert.equal(engine.stopCalls, 1);
+  assert.equal(core.getState().queue.length, 3);
 });
