@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@unitrack/util-fs": "^0.1.0",
     "music-metadata": "^11.14.0"
   },
   "devDependencies": {

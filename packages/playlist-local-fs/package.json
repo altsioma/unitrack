@@ -12,6 +12,9 @@
     "test": "node --test test/*.test.js",
     "typecheck": "tsc -p tsconfig.json"
   },
+  "dependencies": {
+    "@unitrack/util-fs": "^0.1.0"
+  },
   "devDependencies": {
     "@types/node": "^18",
     "@unitrack/core": "^0.1.0",

@@ -1,5 +1,6 @@
 import { readdir, stat } from 'node:fs/promises';
-import { join, extname, basename } from 'node:path';
+import { join, extname } from 'node:path';
+import { titleFromFilename } from '@unitrack/util-fs';
 
 const DEFAULT_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'];
 
@@ -42,12 +43,9 @@ async function walk(dir, config) {
  * @returns {import('@unitrack/core/types').LogicalTrack}
  */
 function toLogicalTrack(filePath, sourcePluginId) {
-  const name = basename(filePath);
-  const ext = extname(name);
-  const title = ext ? name.slice(0, -ext.length) : name;
   return {
     id: filePath,
-    metadata: { artist: '', album: '', title },
+    metadata: { artist: '', album: '', title: titleFromFilename(filePath) },
     sources: [{ pluginId: sourcePluginId, sourceId: filePath, kind: 'local' }],
   };
 }

@@ -9,11 +9,19 @@ import { createLocalFileMetadataProvider } from '../src/index.js';
 // engines floor is Node >=22.
 const FIXTURES = join(import.meta.dirname, 'fixtures');
 
-test('fetchForSource reads artist/album/title from a tagged mp3', async () => {
+/**
+ * @param {string} file
+ * @returns {Promise<import('@unitrack/core/types').TrackMetadata>}
+ */
+function fetchFixture(file) {
   const provider = createLocalFileMetadataProvider();
-  const metadata = await provider.fetchForSource({
-    pluginId: 'local-fs', sourceId: join(FIXTURES, 'sample.mp3'), kind: 'local',
+  return provider.fetchForSource({
+    pluginId: 'local-fs', sourceId: join(FIXTURES, file), kind: 'local',
   });
+}
+
+test('fetchForSource reads artist/album/title from a tagged mp3', async () => {
+  const metadata = await fetchFixture('sample.mp3');
   assert.equal(metadata.artist, 'Test Artist');
   assert.equal(metadata.album, 'Test Album');
   assert.equal(metadata.title, 'Test Title');
@@ -21,21 +29,31 @@ test('fetchForSource reads artist/album/title from a tagged mp3', async () => {
 
 for (const file of ['sample.wav', 'sample.ogg', 'sample.flac', 'sample.m4a']) {
   test(`fetchForSource reads artist/album/title from a tagged ${file}`, async () => {
-    const provider = createLocalFileMetadataProvider();
-    const metadata = await provider.fetchForSource({
-      pluginId: 'local-fs', sourceId: join(FIXTURES, file), kind: 'local',
-    });
+    const metadata = await fetchFixture(file);
     assert.equal(metadata.artist, 'Test Artist');
     assert.equal(metadata.album, 'Test Album');
     assert.equal(metadata.title, 'Test Title');
   });
 }
 
+// sample.aac is deliberately NOT tagged, unlike every other fixture format
+// above. Confirmed empirically (ffmpeg -metadata + music-metadata's own
+// parseFile against the result): a raw ADTS AAC stream has no container
+// field for artist/album/title metadata at all — ffmpeg's encode log claims
+// to write it, but nothing is actually embedded, and music-metadata reads
+// back artist/album/title as all `undefined`. So there is no tagged-AAC
+// fixture to test against; sample.aac instead exercises the untagged/
+// filename-fallback path below, which is the one real, testable AAC
+// behaviour this provider has.
+test('fetchForSource on an untagged file falls back to a filename-derived title', async () => {
+  const metadata = await fetchFixture('sample.aac');
+  assert.equal(metadata.artist, '');
+  assert.equal(metadata.album, '');
+  assert.equal(metadata.title, 'sample');
+});
+
 test('fetchForSource returns a coverArtUrl data: URL for a fixture with embedded art', async () => {
-  const provider = createLocalFileMetadataProvider();
-  const metadata = await provider.fetchForSource({
-    pluginId: 'local-fs', sourceId: join(FIXTURES, 'sample.mp3'), kind: 'local',
-  });
+  const metadata = await fetchFixture('sample.mp3');
   assert.ok(metadata.coverArtUrl?.startsWith('data:image/jpeg;base64,'));
   const base64 = metadata.coverArtUrl.slice('data:image/jpeg;base64,'.length);
   const decoded = Buffer.from(base64, 'base64');
@@ -45,30 +63,14 @@ test('fetchForSource returns a coverArtUrl data: URL for a fixture with embedded
   assert.equal(decoded[1], 0xd8);
 });
 
-test('fetchForSource on an untagged file falls back to a filename-derived title', async () => {
-  const provider = createLocalFileMetadataProvider();
-  const metadata = await provider.fetchForSource({
-    pluginId: 'local-fs', sourceId: join(FIXTURES, 'sample.aac'), kind: 'local',
-  });
-  assert.equal(metadata.artist, '');
-  assert.equal(metadata.album, '');
-  assert.equal(metadata.title, 'sample');
-});
-
 test('fetchForSource returns a duration close to the fixture\'s real ~1 second length', async () => {
-  const provider = createLocalFileMetadataProvider();
-  const metadata = await provider.fetchForSource({
-    pluginId: 'local-fs', sourceId: join(FIXTURES, 'sample.mp3'), kind: 'local',
-  });
+  const metadata = await fetchFixture('sample.mp3');
   assert.ok(metadata.duration !== undefined);
   assert.ok(Math.abs(metadata.duration - 1) < 0.2, `expected ~1s, got ${metadata.duration}`);
 });
 
 test('fetchForSource rejects when the file does not exist', async () => {
-  const provider = createLocalFileMetadataProvider();
-  await assert.rejects(() =>
-    provider.fetchForSource({ pluginId: 'local-fs', sourceId: join(FIXTURES, 'does-not-exist.mp3'), kind: 'local' })
-  );
+  await assert.rejects(() => fetchFixture('does-not-exist.mp3'));
 });
 
 test('fetchForSource rejects when the file is not a recognizable audio format', async () => {

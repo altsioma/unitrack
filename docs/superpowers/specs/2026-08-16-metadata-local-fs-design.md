@@ -270,3 +270,44 @@ not a design-level one.
 Restated from Scope: `search()`, tag writing, caching, `apps/electron-demo`
 wiring, and type-aware multi-picture selection are all out of scope for
 this package.
+
+## Post-review amendments (2026-08-16)
+
+Recorded after a retroactive `/code-review` pass against the implementation,
+run because this package was built before the repo switched to the
+`.agents/skills` (`to-spec`/`tdd`/`code-review`) discipline.
+
+- **`engines.node` raised from `>=18` to `>=22`.** The dependency sign-off
+  above cites `engines.node: ">=18"` (matching every package's own floor)
+  as part of the justification for taking on `music-metadata`. That no
+  longer matches the shipped package: the floor was raised to `>=22` after
+  this spec was written, so that `import.meta.dirname` (Node >=20.11/21.2)
+  could be used directly in the test file — the same
+  `@types/node`-version-compatibility trap already hit once by this repo's
+  `node --test` glob CI bug. `@types/node` was bumped to `^22` alongside it
+  (`@types/node@^18` doesn't type `import.meta.dirname` at all). This is
+  this repo's first package with a Node floor above `>=18`.
+- **`sample.aac` is intentionally untagged — this is not a coverage gap.**
+  Testing item 1 above asks for "known artist/album/title" on each of the
+  six fixture formats, including aac. Empirically confirmed (via `ffmpeg
+  -metadata ... -f adts` followed by `music-metadata`'s own `parseFile`):
+  a raw ADTS AAC stream has no container field for artist/album/title at
+  all. `ffmpeg`'s encode log claims to write the metadata, but nothing is
+  actually embedded, and `music-metadata` reads back `artist`/`album`/
+  `title` as `undefined`. There is deliberately no tagged-aac fixture;
+  `sample.aac` instead exercises the untagged/filename-fallback path,
+  which is the one real, testable AAC behaviour this provider has. (An
+  MP4-container file could be given a `.aac` extension to force tag
+  support, but `music-metadata` detects format by content, not extension —
+  that would just be a disguised M4A test, not a real AAC one, so it was
+  rejected.)
+- **`titleFromFilename` extracted to `@unitrack/util-fs`.** The mapping
+  table above says title-fallback uses "the same helper
+  `@unitrack/playlist-local-fs` uses" — at the time this was written,
+  `@unitrack/playlist-local-fs` had no such helper to reuse; the logic was
+  duplicated inline in both packages. A retroactive code review flagged
+  this. Fixed by extracting a small new zero-dependency package,
+  `@unitrack/util-fs`, exporting `titleFromFilename(filePath)`, which both
+  `@unitrack/playlist-local-fs` and `@unitrack/metadata-local-fs` now
+  depend on as a real (non-dev) runtime dependency — this repo's first
+  internal package-to-package runtime dependency.

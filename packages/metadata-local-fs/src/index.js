@@ -1,15 +1,5 @@
 import { parseFile } from 'music-metadata';
-import { basename, extname } from 'node:path';
-
-/**
- * @param {string} filePath
- * @returns {string}
- */
-function titleFromFilename(filePath) {
-  const name = basename(filePath);
-  const ext = extname(name);
-  return ext ? name.slice(0, -ext.length) : name;
-}
+import { titleFromFilename } from '@unitrack/util-fs';
 
 /**
  * @param {{ id?: string }} [config]
