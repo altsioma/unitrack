@@ -103,6 +103,10 @@
  */
 
 /**
+ * @typedef {'off' | 'all' | 'one'} RepeatMode
+ */
+
+/**
  * @typedef {'idle' | 'loading' | 'playing' | 'paused' | 'error'} PlayerStatus
  */
 
@@ -114,6 +118,8 @@
  * @property {number} duration
  * @property {QueueItem[]} queue
  * @property {SourcePolicyRule[]} policy
+ * @property {boolean} shuffle
+ * @property {RepeatMode} repeatMode
  */
 
 export {};

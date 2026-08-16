@@ -287,3 +287,50 @@ regardless of the random draw, not exact sequences:
   its own later piece of work (see Purpose in the earlier
   `metadata-local-fs`/`playlist-local-fs` specs' "package first, demo
   wiring later" sequencing, applied here too).
+
+## Post-review amendments (2026-08-16)
+
+Recorded after running `/code-review` against the implementation, per this
+repo's newly-adopted `.agents/skills` (`to-spec`/`tdd`/`code-review`)
+discipline.
+
+- **`setCurrentIndex()` and `clear()` also reset `#shuffleHistory`,
+  beyond what "Queue mutations while shuffled" above documented.** That
+  section only named `remove()`/`reorder()`. `setCurrentIndex()` is a
+  pre-existing public method (used by `restoreState()`/`CorePlayer#play()`,
+  but callable directly by any host) — jumping to an arbitrary index while
+  shuffled invalidates `#shuffleHistory` the same way a queue-shape change
+  does (the history would otherwise no longer describe a contiguous path
+  to the new position, so a subsequent `movePrevious()` could land
+  somewhere the listener never actually was). `clear()`'s reset is a
+  no-op today (`#currentIndex` is already `-1` there) but kept for the
+  same "always leave history consistent with the current position"
+  invariant. Both are intentional, not scope creep — documented here since
+  the code-review's Spec axis correctly flagged that the original spec
+  text didn't call them out.
+- **`CorePlayer#advanceOnEnded`'s `repeat: 'one'` branch also requires a
+  current item to exist**, not just `repeatMode === 'one'`
+  (`this.queue.getRepeatMode() === 'one' && this.queue.getCurrentItem()`).
+  The code-review's Spec axis caught a real gap: if the current item is
+  deselected via `setCurrentIndex(-1)` (item stays in the queue, so the
+  unrelated `#reconcileMissingCurrentItem` safety net for *removed* items
+  doesn't fire) while repeat-one is active, the original unconditional
+  branch called `#loadAndPlayCurrent()` against no current item, which
+  silently no-ops and leaves `#status` stuck at whatever it was before
+  `'ended'` fired. Fixed by falling through to the normal
+  `moveNext()`-or-idle path when there's nothing to repeat — which, from
+  index `-1` with items still present, lands on the first item and keeps
+  playing rather than hanging.
+- **`trackChanged` fires again on every `repeat: 'one'` replay** (the
+  Testing Decisions section above originally said it would not
+  re-fire — corrected during implementation, before the code review, once
+  it became clear the replay path reuses `#loadAndPlayCurrent()` as-is).
+  A host distinguishing "restarted the same track" from "moved to a new
+  one" compares the emitted item's `queueItemId` against the previous
+  one itself, rather than relying on the event firing or not.
+- **`CorePlayer#play()` starting from idle is unaffected by shuffle** —
+  it still always starts at canonical index `0`. Shuffle only governs
+  traversal *after* a track is already current (via `moveNext`/
+  `movePrevious`/auto-advance), not the very first pick from an empty
+  selection. Not part of the original spec text; clarified and confirmed
+  with the user before implementation.

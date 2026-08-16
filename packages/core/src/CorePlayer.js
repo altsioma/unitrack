@@ -71,6 +71,8 @@ export class CorePlayer extends EventEmitter {
       duration: this.#duration,
       queue: this.queue.getItems(),
       policy: this.#policy,
+      shuffle: this.queue.isShuffleEnabled(),
+      repeatMode: this.queue.getRepeatMode(),
     };
   }
 
@@ -101,6 +103,8 @@ export class CorePlayer extends EventEmitter {
       ? snapshot.queue.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId)
       : -1;
     this.queue.setCurrentIndex(originalIndex);
+    this.queue.setShuffle(snapshot.shuffle ?? false);
+    this.queue.setRepeatMode(snapshot.repeatMode ?? 'off');
     this.#policy = snapshot.policy ?? [];
     this.#status = 'idle';
     this.#position = snapshot.position ?? 0;
@@ -275,6 +279,10 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async #advanceOnEnded() {
+    if (this.queue.getRepeatMode() === 'one' && this.queue.getCurrentItem()) {
+      await this.#loadAndPlayCurrent();
+      return;
+    }
     const moved = this.queue.moveNext();
     if (moved) {
       await this.#loadAndPlayCurrent();
