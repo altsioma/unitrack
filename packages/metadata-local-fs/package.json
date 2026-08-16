@@ -1,0 +1,24 @@
+{
+  "name": "@unitrack/metadata-local-fs",
+  "version": "0.1.0",
+  "description": "Local file tag-reading Metadata Provider plugin for @unitrack/core",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@unitrack/util-fs": "^0.1.0",
+    "music-metadata": "^11.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@unitrack/core": "^0.1.0",
+    "typescript": "^5.5.4"
+  }
+}
