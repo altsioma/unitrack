@@ -122,7 +122,7 @@ Expected: output matches the table above (small floating-point duration differen
   "description": "Local file tag-reading Metadata Provider plugin for @unitrack/core",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "main": "src/index.js",
   "exports": "./src/index.js",
@@ -134,7 +134,7 @@ Expected: output matches the table above (small floating-point duration differen
     "music-metadata": "^11.14.0"
   },
   "devDependencies": {
-    "@types/node": "^18",
+    "@types/node": "^22",
     "@unitrack/core": "^0.1.0",
     "typescript": "^5.5.4"
   }
@@ -142,6 +142,8 @@ Expected: output matches the table above (small floating-point duration differen
 ```
 
 Note the new top-level `"dependencies"` field — every other package in this repo only has `"devDependencies"`. `"test": "node --test test/*.test.js"` — unquoted single-star glob, matching every other package (see commit `0a70d4e`). Do not reintroduce the quoted `**` form.
+
+**`engines.node: ">=22"`, higher than every other package's `">=18"`, and `@types/node` bumped to `^22` (not `^18`) — both by explicit request.** This package's tests use `import.meta.dirname` (see Task 3) rather than the `fileURLToPath(import.meta.url)` workaround, so the real runtime floor is wherever that property exists (Node 20.11+/21.2+) — `>=22` is a clean, memorable round number above that, not a precisely-tuned minimum. Confirmed empirically (a scratch `tsc -p` run against `@types/node@18` vs `@types/node@22`, both under `"module": "NodeNext"`): `@types/node@^18` does **not** type `import.meta.dirname` at all (`Property 'dirname' does not exist on type 'ImportMeta'`) even though the property exists at runtime on a new-enough Node — `@types/node@^22` types it correctly. Bumping `@types/node` is a real necessity here, not a stylistic choice; getting this wrong would have been a typecheck failure indistinguishable in spirit from the `node --test` glob CI bug this repo already hit once. This only affects `@unitrack/metadata-local-fs`'s own `engines`/`@types/node` — every other package keeps `">=18"`/`^18`. One side effect worth flagging: the CI workflow's matrix still runs `20.x` and `22.x` for the whole workspace (no `engine-strict` is set anywhere in this repo, confirmed — no `.npmrc`), so `npm ci`/`npm test` on the `20.x` leg will likely still install and pass for this package (a same-major-line `20.x` GitHub Actions runner today resolves well above 20.11) despite its declared floor now reading `>=22` — a soft inconsistency, not a functional break; call it out if it ever actually fails on that leg.
 
 - [ ] **Step 2: Create `tsconfig.json`**
 
@@ -255,13 +257,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { createLocalFileMetadataProvider } from '../src/index.js';
 
-// fileURLToPath + dirname, not import.meta.dirname (Node >=20.11 only) —
-// this package's own engines floor is Node >=18.
-const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+// import.meta.dirname (Node >=20.11/21.2) is safe here — this package's own
+// engines floor is Node >=22.
+const FIXTURES = join(import.meta.dirname, 'fixtures');
 
 test('fetchForSource reads artist/album/title from a tagged mp3', async () => {
   const provider = createLocalFileMetadataProvider();
