@@ -146,3 +146,41 @@ reads) and have no browser/DOM dependency, so — same as
 `preload.mjs`, no new IPC channel needed for them (only the folder *picker
 dialog* itself needs IPC, for the same `dialog.showOpenDialog` reason the
 file picker already does).
+
+## Post-review amendments (2026-08-17)
+
+`/code-review` was run against this diff (fixed point: `feat/volume`).
+Two real findings led to changes:
+
+- **`trackChanged` now also calls `renderQueue()`.** The Solution section
+  above says the queue list re-renders on both `queueChanged` and
+  `trackChanged` "(for the highlight)"; the first implementation only
+  wired `queueChanged`. It happened to still work (every path that moves
+  `currentIndex` also emits `queueChanged`), but that's an invariant, not
+  a guarantee — wiring `trackChanged` too matches the spec text literally
+  and removes the fragility.
+- **Undocumented decision, now documented: opening a file/folder only
+  auto-plays if the player is currently `idle`** (`maybeAutoPlay()`),
+  not unconditionally as the original single-file "Open File" behavior
+  did. This was an implicit call made during implementation, not
+  surfaced as an Implementation Decision at spec time — flagged by
+  review as scope creep relative to the spec text, correctly. Recording
+  it now: given Implementation Decision 1 (open appends rather than
+  replaces the queue), unconditional autoplay would interrupt whatever
+  is already playing every time a file/folder is opened, which
+  contradicts the whole point of appending. Auto-playing only when idle
+  preserves "opening your first file/folder just starts playing" while
+  not stealing focus from an in-progress queue.
+
+One Spec-axis finding was investigated and rejected: a claim that
+`CorePlayer.setVolume/getVolume`, `QueueManager.setShuffle/isShuffleEnabled/
+setRepeatMode/getRepeatMode`, and the `@unitrack/playlist-local-fs`/
+`@unitrack/metadata-local-fs` packages "don't exist in this repo." This is
+false — verified directly against the actual repo (`npm run typecheck` and
+`npm run test --workspaces` both pass, including dedicated tests for every
+API named). The reviewing sub-agent went off-script and explored the
+filesystem itself instead of relying on the diff/spec text handed to it,
+landing on a stale or wrong path. Noted here as a repeat of the
+review-tooling pitfall from the volume spec's own review (there: an
+incomplete prompt; here: a sub-agent ignoring the provided diff/spec in
+favor of unreliable self-directed exploration) — not a real code issue.
