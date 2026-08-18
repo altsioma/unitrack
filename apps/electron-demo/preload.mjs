@@ -137,6 +137,13 @@ window.addEventListener('DOMContentLoaded', () => {
     node: process.versions.node,
     electron: process.versions.electron,
   });
+
+  // Read once from the main process, which owns config.json. Falls back to
+  // the same default main uses, so a failed IPC read can't silently flip
+  // behaviour to the opposite of what the config says.
+  /** @type {{ autoPlayOnOpen: boolean }} */
+  const config = ipcRenderer.sendSync('get-config') ?? { autoPlayOnOpen: false };
+  log('renderer', 'config', config);
   const core = new CorePlayer();
   core.registerSourceProvider(createLocalFileSourceProvider());
   core.registerPlaybackEngine(createWebAudioPlaybackEngine());
@@ -227,11 +234,24 @@ window.addEventListener('DOMContentLoaded', () => {
     timeEl.textContent = `${formatTime(position)} / ${formatTime(duration)}`;
   }
 
-  /** @returns {Promise<void>} */
-  async function maybeAutoPlay() {
-    if (core.getState().status === 'idle') {
-      await core.play();
+  /**
+   * Starts playback after an open, if the config asks for it. Opening
+   * appends to the queue rather than replacing it, so this deliberately
+   * only ever starts an *idle* player — it never interrupts something
+   * already playing or resumes something the listener paused.
+   * @returns {Promise<void>}
+   */
+  async function autoPlayIfEnabled() {
+    if (!config.autoPlayOnOpen) {
+      log('ui', 'autoPlayOnOpen is false — queue updated, not starting playback');
+      return;
     }
+    if (core.getState().status !== 'idle') {
+      log('ui', 'autoPlayOnOpen is true but player is not idle — leaving playback alone');
+      return;
+    }
+    log('ui', 'autoPlayOnOpen is true and player is idle — starting playback');
+    await core.play();
   }
 
   core.on('stateChanged', () => {
@@ -311,7 +331,7 @@ window.addEventListener('DOMContentLoaded', () => {
       sources: [{ pluginId: 'local-fs', sourceId: filePath, kind: 'local' }],
     });
     log('ui', 'Open File: track appended', { title });
-    await maybeAutoPlay();
+    await autoPlayIfEnabled();
   });
 
   requireElement('open-folder').addEventListener('click', async () => {
@@ -349,7 +369,7 @@ window.addEventListener('DOMContentLoaded', () => {
     });
     log('ui', `enrichment done for ${enrichedTracks.length} track(s), appending to queue`);
     core.queue.add(enrichedTracks);
-    await maybeAutoPlay();
+    await autoPlayIfEnabled();
     log('ui', 'Open Folder complete');
   });
 

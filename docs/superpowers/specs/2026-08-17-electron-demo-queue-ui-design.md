@@ -160,7 +160,9 @@ Two real findings led to changes:
   a guarantee — wiring `trackChanged` too matches the spec text literally
   and removes the fragility.
 - **Undocumented decision, now documented: opening a file/folder only
-  auto-plays if the player is currently `idle`** (`maybeAutoPlay()`),
+  auto-plays if the player is currently `idle`** (`maybeAutoPlay()`;
+  superseded 2026-08-18 — auto-play is now off by default and
+  config-gated, see "Config" below),
   not unconditionally as the original single-file "Open File" behavior
   did. This was an implicit call made during implementation, not
   surfaced as an Implementation Decision at spec time — flagged by
@@ -372,3 +374,45 @@ Two rules keep it usable rather than merely loud:
 When adding a feature to this app, add its logging in the same pass — a
 new IPC channel goes through `handleWithLogging`, a new UI control logs
 its interaction, a new async step logs entry and outcome.
+
+
+## Config (2026-08-18)
+
+**`apps/electron-demo/config.json`, read once at startup, with
+`autoPlayOnOpen: false` as the default.** Opening a file or folder now
+only appends to the queue and leaves playback alone; it starts playing
+only if the config explicitly asks for it.
+
+This supersedes the "auto-play when idle" behaviour recorded in the
+post-review amendment above. That behaviour was already a compromise —
+Implementation Decision 1 made opening *append* rather than replace, and
+auto-starting on every append means the app grabs the speakers each time
+you add something to a queue you were curating. Off by default is the
+behaviour that actually matches "opening adds to my queue".
+
+Shape and handling:
+
+- Defaults live in `main.js` (`DEFAULT_CONFIG`); `config.json` is merged
+  over them, so a partial file only overrides what it names.
+- A missing, unreadable or malformed `config.json` is **not** an error —
+  it logs the reason and falls back to the defaults, so the app always
+  starts. Verified against a real Electron run for all four cases
+  (`false`, `true`, corrupt file, missing file).
+- The main process owns the file; the renderer reads the resolved config
+  once over a synchronous `get-config` IPC channel, which keeps preload's
+  startup wiring free of async config plumbing.
+- `autoPlayOnOpen: true` still only starts an *idle* player — it never
+  interrupts something already playing or resumes something the listener
+  deliberately paused.
+- **No UI toggle**, per sign-off: this stays a config-file setting, in
+  keeping with the app's minimal control surface.
+- **Deliberately one key.** Other tunables (metadata concurrency, window
+  size) were left as constants rather than pre-emptively moved into the
+  config, consistent with this repo's no-speculative-generality posture —
+  they move there if and when someone actually wants to change them.
+
+`config.json` is committed with the defaults rather than gitignored, so
+the app works out of the box and the setting is discoverable. The
+trade-off is that changing it locally shows up as a git diff; that seems
+right for a real behavioural setting, but it is worth remembering given
+this repo's existing friction with a permanently-dirty tracked file.

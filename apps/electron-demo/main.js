@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createLocalFileMetadataProvider } from '@unitrack/metadata-local-fs';
 
@@ -59,6 +60,49 @@ process.on('unhandledRejection', (reason) => {
 ipcMain.on('renderer-log', (event, /** @type {any} */ payload) => {
   log(payload?.scope ?? 'renderer', payload?.message ?? String(payload), payload?.detail);
   event.returnValue = null;
+});
+
+// --- Config --------------------------------------------------------------
+//
+// Read once at startup from config.json next to this file. Unknown keys are
+// ignored and missing ones fall back to the defaults below, so a partial or
+// absent config.json is not an error — the app still starts with sane
+// behaviour. Deliberately minimal: one key, added because it was actually
+// wanted, rather than a speculative settings surface.
+
+/** @type {{ autoPlayOnOpen: boolean }} */
+const DEFAULT_CONFIG = {
+  // Whether opening a file or a folder immediately starts playback.
+  // Defaults to false: opening now only appends to the queue (see
+  // Implementation Decision 1), so auto-starting would take over the
+  // speakers every time you add something.
+  autoPlayOnOpen: false,
+};
+
+/** @returns {{ autoPlayOnOpen: boolean }} */
+function loadConfig() {
+  const configPath = path.join(__dirname, 'config.json');
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8'));
+    const config = { ...DEFAULT_CONFIG, ...parsed };
+    log('config', `loaded ${configPath}`, config);
+    return config;
+  } catch (err) {
+    log('config', `could not read ${configPath}, using defaults`, {
+      reason: err instanceof Error ? err.message : String(err),
+      defaults: DEFAULT_CONFIG,
+    });
+    return { ...DEFAULT_CONFIG };
+  }
+}
+
+const config = loadConfig();
+
+// Synchronous on purpose: the renderer reads this once during its own
+// startup, and a blocking read keeps the preload's wiring straightforward
+// (no async config plumbing before the UI can be built).
+ipcMain.on('get-config', (event) => {
+  event.returnValue = config;
 });
 
 const metadataProvider = createLocalFileMetadataProvider();
