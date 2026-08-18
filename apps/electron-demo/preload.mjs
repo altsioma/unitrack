@@ -235,7 +235,17 @@ window.addEventListener('DOMContentLoaded', () => {
       if (!sourceRef || !metadataProvider.fetchForSource) return track;
       try {
         const metadata = await metadataProvider.fetchForSource(sourceRef);
-        return { ...track, metadata: { ...track.metadata, ...metadata } };
+        // coverArtUrl is a base64 data: URL — for a track with embedded
+        // album art this can be hundreds of KB to a few MB per track, and
+        // nothing in this app renders it (see spec's Out of Scope). Folder
+        // opens with many such tracks were observed OOM-crashing the
+        // renderer's V8 heap (Electron reports this as
+        // render-process-gone reason 'crashed', not 'oom' — a known
+        // Electron/macOS misreport, electron/electron#40426) purely from
+        // holding all that unused image data in the queue at once.
+        // Dropping it here costs nothing, since it's unused.
+        const { coverArtUrl, ...displayMetadata } = metadata;
+        return { ...track, metadata: { ...track.metadata, ...displayMetadata } };
       } catch {
         // Tag read failed for this one file (corrupt/unsupported) — keep
         // the playlist provider's filename-derived placeholder metadata

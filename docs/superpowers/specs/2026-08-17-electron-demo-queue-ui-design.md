@@ -229,3 +229,34 @@ Manual testing surfaced two real bugs:
    "something escapes a try/catch and takes the renderer down" rather
    than a single pinpointed fix — flagged here rather than claimed as a
    definitively verified fix.
+
+## Folder-open crash: root cause confirmed (2026-08-18)
+
+The `render-process-gone` diagnostic added above pinned it down:
+`{ reason: 'crashed', exitCode: 5 }` on macOS. That exact signature
+(`reason: 'crashed'` + `exitCode: 5` on macOS) matches a known,
+closed-as-not-planned Electron bug
+([electron/electron#40426](https://github.com/electron/electron/issues/40426)):
+when the renderer's V8 heap actually runs out of memory
+("`V8 javascript OOM (Committing semi space failed.)`"),
+`render-process-gone` misreports `reason: 'crashed'` instead of the
+correct `'oom'` — so this was a real out-of-memory crash, not an
+uncaught JS error (which is why the `unhandledRejection`/`error` safety
+net added earlier didn't catch it — a V8 OOM kills the process before
+any JS handler can run).
+
+The actual memory driver: `coverArtUrl` (a base64 `data:` URL, up to a
+few MB per track for embedded album art) was being merged into every
+track's stored metadata during Open Folder, even though nothing in this
+app renders it (see Out of Scope: "Cover art display"). For a folder
+with many tracks carrying embedded art, that's the full image data for
+every track held in the queue simultaneously, unused — enough to
+exhaust the renderer's V8 heap on a large-enough folder. Fixed by
+dropping `coverArtUrl` from the metadata actually stored (destructured
+out before merging); `@unitrack/metadata-local-fs` itself is unchanged
+and still returns it, since other, non-demo hosts may want it.
+
+The earlier `mapWithConcurrencyLimit` and `unhandledRejection`/`error`
+safety net (previous amendment) are still worth keeping — they guard
+against transient fd/memory spikes and any future uncaught JS error
+respectively — but neither was the actual cause here.
