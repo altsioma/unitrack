@@ -1,6 +1,6 @@
 {
   "name": "@unitrack/playlist-local-fs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local folder-scanning Playlist Provider plugin for @unitrack/core",
   "type": "module",
   "engines": {
@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@types/node": "^18",
-    "@unitrack/core": "^0.1.0",
+    "@unitrack/core": "^0.2.0",
     "typescript": "^5.5.4"
   }
 }

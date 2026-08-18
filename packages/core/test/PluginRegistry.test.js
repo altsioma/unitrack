@@ -18,19 +18,28 @@ test('throws when registering a source provider with a duplicate id', () => {
   assert.throws(() => registry.registerSourceProvider(provider), /already registered/);
 });
 
-test('getPlaybackEngineFor returns the first registered engine whose canPlay matches', () => {
+test('getPlaybackEngineFor returns the first registered engine whose canPlay matches', async () => {
   const registry = new PluginRegistry();
   const noMatch = createMockPlaybackEngine({ id: 'engine-a', canPlayImpl: () => false });
   const match = createMockPlaybackEngine({ id: 'engine-b', canPlayImpl: () => true });
   registry.registerPlaybackEngine(noMatch);
   registry.registerPlaybackEngine(match);
-  assert.equal(registry.getPlaybackEngineFor({ url: 'x' }), match);
+  assert.equal(await registry.getPlaybackEngineFor({ url: 'x' }), match);
 });
 
-test('getPlaybackEngineFor returns undefined when no engine matches', () => {
+test('getPlaybackEngineFor returns undefined when no engine matches', async () => {
   const registry = new PluginRegistry();
   registry.registerPlaybackEngine(createMockPlaybackEngine({ id: 'engine-a', canPlayImpl: () => false }));
-  assert.equal(registry.getPlaybackEngineFor({ url: 'x' }), undefined);
+  assert.equal(await registry.getPlaybackEngineFor({ url: 'x' }), undefined);
+});
+
+test('getPlaybackEngines returns every registered engine in registration order', () => {
+  const registry = new PluginRegistry();
+  const a = createMockPlaybackEngine({ id: 'engine-a' });
+  const b = createMockPlaybackEngine({ id: 'engine-b' });
+  registry.registerPlaybackEngine(a);
+  registry.registerPlaybackEngine(b);
+  assert.deepEqual(registry.getPlaybackEngines(), [a, b]);
 });
 
 test('throws when registering a playback engine with a duplicate id', () => {

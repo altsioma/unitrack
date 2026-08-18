@@ -1,6 +1,6 @@
 {
   "name": "@unitrack/electron-demo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Minimal Electron demo host for @unitrack/core",
   "type": "module",
@@ -10,11 +10,11 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@unitrack/core": "^0.1.0",
-    "@unitrack/source-local-fs": "^0.1.0",
-    "@unitrack/engine-web-audio": "^0.1.0",
-    "@unitrack/playlist-local-fs": "^0.1.0",
-    "@unitrack/metadata-local-fs": "^0.1.0"
+    "@unitrack/core": "^0.2.0",
+    "@unitrack/source-local-fs": "^0.2.0",
+    "@unitrack/engine-web-audio": "^0.2.0",
+    "@unitrack/playlist-local-fs": "^0.2.0",
+    "@unitrack/metadata-local-fs": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^18",

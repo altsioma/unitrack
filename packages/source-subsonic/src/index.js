@@ -51,14 +51,66 @@ export function createSubsonicSourceProvider({
   clientName = 'unitrack',
   timeoutMs = 5000,
 }) {
+  /**
+   * @param {import('@unitrack/core/types').SourceRef} ref
+   * @returns {Promise<import('@unitrack/core/types').ResolvedSource>}
+   */
+  async function resolveRef(ref) {
+    const pingUrl = buildUrl(baseUrl, '/rest/ping.view', {
+      username, password, clientName, extraParams: { f: 'json' },
+    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    /** @type {Response} */
+    let response;
+    try {
+      response = await fetch(pingUrl, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!response.ok) {
+      throw new Error(`subsonic ping failed: HTTP ${response.status}`);
+    }
+    const body = await response.json();
+    const subsonicResponse = body['subsonic-response'];
+    if (subsonicResponse?.status !== 'ok') {
+      const error = subsonicResponse?.error;
+      throw new Error(`subsonic ping failed: ${error?.message ?? 'unknown error'} (code ${error?.code ?? 'unknown'})`);
+    }
+
+    const streamUrl = buildUrl(baseUrl, '/rest/stream.view', {
+      username, password, clientName,
+      extraParams: { id: ref.sourceId, format: 'raw' },
+    });
+    return { url: streamUrl.href };
+  }
+
   return {
     id,
     kind: 'self-hosted',
+
+    // Not usable offline (every resolve() is a network round-trip to
+    // ping.view + a freshly-signed stream.view URL). requiresRevalidation
+    // is true because the signed URL embeds a one-time salt/token pair —
+    // revalidate() below just re-signs a fresh URL the same way resolve()
+    // does, so a stale/expired link can be retried without the caller
+    // needing to know anything Subsonic-specific.
+    capabilities: { offline: false, requiresRevalidation: true },
+
+    /**
+     * @param {import('@unitrack/core/types').PluginContext} ctx
+     * @returns {Promise<void>}
+     */
+    async initialize(ctx) {},
+
+    /** @returns {Promise<void>} */
+    async dispose() {},
+
     /**
      * @param {import('@unitrack/core/types').SourceRef} ref
-     * @returns {boolean}
+     * @returns {Promise<boolean>}
      */
-    canResolve(ref) {
+    async canResolve(ref) {
       return ref.pluginId === id;
     },
     /**
@@ -66,33 +118,19 @@ export function createSubsonicSourceProvider({
      * @returns {Promise<import('@unitrack/core/types').ResolvedSource>}
      */
     async resolve(ref) {
-      const pingUrl = buildUrl(baseUrl, '/rest/ping.view', {
-        username, password, clientName, extraParams: { f: 'json' },
-      });
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      /** @type {Response} */
-      let response;
+      return resolveRef(ref);
+    },
+    /**
+     * @param {import('@unitrack/core/types').SourceRef} ref
+     * @returns {Promise<import('@unitrack/core/types').RevalidationResult>}
+     */
+    async revalidate(ref) {
       try {
-        response = await fetch(pingUrl, { signal: controller.signal });
-      } finally {
-        clearTimeout(timeout);
+        await resolveRef(ref);
+        return { valid: true, ref };
+      } catch (err) {
+        return { valid: false, reason: err instanceof Error ? err.message : String(err) };
       }
-      if (!response.ok) {
-        throw new Error(`subsonic ping failed: HTTP ${response.status}`);
-      }
-      const body = await response.json();
-      const subsonicResponse = body['subsonic-response'];
-      if (subsonicResponse?.status !== 'ok') {
-        const error = subsonicResponse?.error;
-        throw new Error(`subsonic ping failed: ${error?.message ?? 'unknown error'} (code ${error?.code ?? 'unknown'})`);
-      }
-
-      const streamUrl = buildUrl(baseUrl, '/rest/stream.view', {
-        username, password, clientName,
-        extraParams: { id: ref.sourceId, format: 'raw' },
-      });
-      return { url: streamUrl.href };
     },
   };
 }

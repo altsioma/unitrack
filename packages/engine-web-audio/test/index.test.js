@@ -24,24 +24,47 @@ test('has the web-audio id', () => {
   assert.equal(engine.id, 'web-audio');
 });
 
-test('canPlay returns true for a format the browser reports as playable', () => {
+test('canPlay returns true for a format the browser reports as playable', async () => {
   const audio = createFakeAudioElement();
   audio._canPlayTypeResult = 'probably';
   const { engine } = makeEngine(audio);
-  assert.equal(engine.canPlay({ url: 'file:///a.mp3', format: 'mp3' }), true);
+  assert.equal(await engine.canPlay({ url: 'file:///a.mp3', format: 'mp3' }), true);
 });
 
-test('canPlay returns false for a mapped format the browser cannot play', () => {
+test('canPlay returns false for a mapped format the browser cannot play', async () => {
   const audio = createFakeAudioElement();
   audio._canPlayTypeResult = '';
   const { engine } = makeEngine(audio);
-  assert.equal(engine.canPlay({ url: 'file:///a.mp3', format: 'mp3' }), false);
+  assert.equal(await engine.canPlay({ url: 'file:///a.mp3', format: 'mp3' }), false);
 });
 
-test('canPlay returns true for an unmapped or missing format', () => {
+test('canPlay returns true for an unmapped or missing format', async () => {
   const { engine } = makeEngine();
-  assert.equal(engine.canPlay({ url: 'file:///a.xyz', format: 'xyz' }), true);
-  assert.equal(engine.canPlay({ url: 'file:///a' }), true);
+  assert.equal(await engine.canPlay({ url: 'file:///a.xyz', format: 'xyz' }), true);
+  assert.equal(await engine.canPlay({ url: 'file:///a' }), true);
+});
+
+test('exposes core-owned, non-gapless, no-background-playback capabilities', () => {
+  const { engine } = makeEngine();
+  assert.deepEqual(engine.capabilities, { gapless: false, backgroundPlayback: false, queueAuthority: 'core' });
+});
+
+test('initialize resolves without throwing', async () => {
+  const { engine } = makeEngine();
+  await engine.initialize({});
+});
+
+test('dispose closes the AudioContext', async () => {
+  const { engine, audioContext } = makeEngine();
+  await engine.dispose();
+  assert.equal(audioContext.state, 'closed');
+});
+
+test('dispose is a no-op when the AudioContext is already closed', async () => {
+  const { engine, audioContext } = makeEngine();
+  await engine.dispose();
+  await engine.dispose();
+  assert.equal(audioContext.state, 'closed');
 });
 
 test('load sets the audio src and resolves once canplay fires', async () => {

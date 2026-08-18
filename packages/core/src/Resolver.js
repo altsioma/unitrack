@@ -36,18 +36,43 @@ export async function resolveTrack(track, policy, providers) {
         failedSources.push({ pluginId: ref.pluginId, sourceId: ref.sourceId, reason: 'no provider registered for pluginId' });
         continue;
       }
-      if (!provider.canResolve(ref)) {
+      if (!(await provider.canResolve(ref))) {
         failedSources.push({ pluginId: ref.pluginId, sourceId: ref.sourceId, reason: 'provider cannot resolve this source' });
         continue;
       }
       try {
         return await provider.resolve(ref);
       } catch (err) {
-        failedSources.push({
-          pluginId: ref.pluginId,
-          sourceId: ref.sourceId,
-          reason: err instanceof Error ? err.message : String(err),
-        });
+        const originalReason = err instanceof Error ? err.message : String(err);
+        // A provider whose capabilities advertise requiresRevalidation gets
+        // one retry via revalidate() before this source counts as failed —
+        // covers cases like an expired signed URL or a moved file, where a
+        // freshly-revalidated ref might succeed where the first attempt
+        // didn't.
+        if (provider.capabilities?.requiresRevalidation) {
+          const revalidation = await provider.revalidate(ref).catch(() =>
+            /** @type {import('./types.js').RevalidationResult} */ ({ valid: false })
+          );
+          if (revalidation.valid && revalidation.ref) {
+            try {
+              return await provider.resolve(revalidation.ref);
+            } catch (retryErr) {
+              failedSources.push({
+                pluginId: ref.pluginId,
+                sourceId: ref.sourceId,
+                reason: retryErr instanceof Error ? retryErr.message : String(retryErr),
+              });
+              continue;
+            }
+          }
+          failedSources.push({
+            pluginId: ref.pluginId,
+            sourceId: ref.sourceId,
+            reason: originalReason || revalidation.reason || 'resolution failed',
+          });
+          continue;
+        }
+        failedSources.push({ pluginId: ref.pluginId, sourceId: ref.sourceId, reason: originalReason });
       }
     }
   }

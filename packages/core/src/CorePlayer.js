@@ -3,6 +3,23 @@ import { QueueManager } from './Queue.js';
 import { PluginRegistry } from './PluginRegistry.js';
 import { resolveTrack, TrackResolutionError } from './Resolver.js';
 
+// How many upcoming queue items (including the current one) get resolved
+// and handed to a queueAuthority: 'engine' engine via setPlaybackPlan().
+const DEFAULT_LOOKAHEAD_WINDOW = 3;
+
+/**
+ * Thrown by play() when initializePlugins() has not yet been awaited —
+ * every registered plugin's initialize() must run before Core starts
+ * driving playback through it.
+ * @extends {Error}
+ */
+export class PluginsNotInitializedError extends Error {
+  constructor() {
+    super('CorePlayer.initializePlugins() must be awaited before play()');
+    this.name = 'PluginsNotInitializedError';
+  }
+}
+
 /** @extends {EventEmitter} */
 export class CorePlayer extends EventEmitter {
   /** @type {PluginRegistry} */
@@ -27,6 +44,8 @@ export class CorePlayer extends EventEmitter {
   #operationChain = Promise.resolve();
   /** @type {string | undefined} */
   #loadedQueueItemId;
+  /** @type {boolean} */
+  #initialized = false;
 
   constructor() {
     super();
@@ -35,6 +54,8 @@ export class CorePlayer extends EventEmitter {
       const loadedId = this.#loadedQueueItemId;
       if (loadedId && !this.queue.getItems().some((i) => i.queueItemId === loadedId)) {
         this.#enqueue(() => this.#reconcileMissingCurrentItem(loadedId));
+      } else if (loadedId) {
+        this.#enqueue(() => this.#refreshLookaheadPlan());
       }
     });
   }
@@ -57,6 +78,43 @@ export class CorePlayer extends EventEmitter {
   /** @param {import('./types.js').PlaylistProvider} plugin @returns {void} */
   registerPlaylistProvider(plugin) {
     this.#registry.registerPlaylistProvider(plugin);
+  }
+
+  /**
+   * Runs initialize(ctx) on every registered SourceProvider and
+   * PlaybackEngine, in parallel. Must be awaited before the first play() —
+   * play() throws PluginsNotInitializedError otherwise.
+   * @param {Partial<import('./types.js').PluginContext>} [hostContext]
+   * @returns {Promise<void>}
+   */
+  async initializePlugins(hostContext = {}) {
+    /** @type {import('./types.js').PluginContext} */
+    const ctx = {
+      log: hostContext.log ?? (() => {}),
+      config: hostContext.config ?? {},
+      host: hostContext.host ?? { platform: 'web', version: '0' },
+    };
+    const plugins = [
+      ...this.#registry.getSourceProviders(),
+      ...this.#registry.getPlaybackEngines(),
+    ];
+    await Promise.all(plugins.map((plugin) => plugin.initialize(ctx)));
+    this.#initialized = true;
+  }
+
+  /**
+   * Runs dispose() on every registered SourceProvider and PlaybackEngine,
+   * in parallel. After this resolves, play() requires initializePlugins()
+   * again.
+   * @returns {Promise<void>}
+   */
+  async dispose() {
+    const plugins = [
+      ...this.#registry.getSourceProviders(),
+      ...this.#registry.getPlaybackEngines(),
+    ];
+    await Promise.all(plugins.map((plugin) => plugin.dispose()));
+    this.#initialized = false;
   }
 
   /** @param {import('./types.js').SourcePolicyRule[]} policyRules @returns {void} */
@@ -134,6 +192,9 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async play() {
+    if (!this.#initialized) {
+      throw new PluginsNotInitializedError();
+    }
     return this.#enqueue(() => this.#play());
   }
 
@@ -282,7 +343,7 @@ export class CorePlayer extends EventEmitter {
     /** @type {import('./types.js').PlaybackEngine | undefined} */
     let engine;
     try {
-      engine = this.#registry.getPlaybackEngineFor(resolved);
+      engine = await this.#registry.getPlaybackEngineFor(resolved);
     } catch (err) {
       this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
       return;
@@ -294,7 +355,12 @@ export class CorePlayer extends EventEmitter {
 
     this.#bindEngine(engine);
     try {
-      await engine.load(resolved);
+      if (engine.capabilities.queueAuthority === 'engine' && engine.setPlaybackPlan) {
+        const plan = await this.#resolveLookaheadPlan(queueItem, resolved);
+        await engine.setPlaybackPlan(plan);
+      } else {
+        await engine.load(resolved);
+      }
       await engine.play();
     } catch (err) {
       this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
@@ -303,6 +369,92 @@ export class CorePlayer extends EventEmitter {
     this.#loadedQueueItemId = queueItem.queueItemId;
     this.#status = 'playing';
     this.emit('trackChanged', queueItem);
+    this.emit('stateChanged');
+  }
+
+  /**
+   * Builds the PlaybackPlanEntry[] window handed to a queueAuthority:
+   * 'engine' engine's setPlaybackPlan(), starting at the current queue item
+   * and resolving up to DEFAULT_LOOKAHEAD_WINDOW items ahead of it.
+   *
+   * Known limitation: walks queue.getItems() in plain array order, not
+   * through QueueManager's shuffle history — there is no non-mutating
+   * "peek the next N items" method on QueueManager yet. Acceptable for now
+   * since no queueAuthority:'engine' engine exists yet to exercise shuffle
+   * interaction; revisit once one does.
+   *
+   * @param {import('./types.js').QueueItem} currentQueueItem
+   * @param {import('./types.js').ResolvedSource} currentResolved
+   * @returns {Promise<import('./types.js').PlaybackPlanEntry[]>}
+   */
+  async #resolveLookaheadPlan(currentQueueItem, currentResolved) {
+    /** @type {import('./types.js').PlaybackPlanEntry[]} */
+    const plan = [{ queueItemId: currentQueueItem.queueItemId, resolved: currentResolved }];
+    const items = this.queue.getItems();
+    const currentIdx = items.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId);
+    if (currentIdx === -1) return plan;
+    const providers = this.#registry.getSourceProviders();
+    for (let i = currentIdx + 1; i < items.length && plan.length < DEFAULT_LOOKAHEAD_WINDOW; i += 1) {
+      const item = items[i];
+      try {
+        const resolved = await resolveTrack(item.track, this.#policy, providers);
+        plan.push({ queueItemId: item.queueItemId, resolved });
+      } catch {
+        // A lookahead item that fails to resolve is just omitted from the
+        // plan rather than aborting the whole window — normal advancement
+        // will surface a real error if playback ever actually reaches it.
+      }
+    }
+    return plan;
+  }
+
+  /**
+   * Re-resolves and re-pushes the lookahead plan to the active
+   * queueAuthority:'engine' engine after the queue changes shape (add,
+   * remove, reorder) while that engine still owns the currently-loaded
+   * item. A no-op for queueAuthority:'core' engines, or when nothing is
+   * currently loaded.
+   * @returns {Promise<void>}
+   */
+  async #refreshLookaheadPlan() {
+    if (!this.#activeEngine || this.#activeEngine.capabilities.queueAuthority !== 'engine') return;
+    if (!this.#activeEngine.setPlaybackPlan) return;
+    const currentQueueItem = this.queue.getCurrentItem();
+    if (!currentQueueItem || currentQueueItem.queueItemId !== this.#loadedQueueItemId) return;
+    /** @type {import('./types.js').ResolvedSource} */
+    let resolved;
+    try {
+      resolved = await resolveTrack(currentQueueItem.track, this.#policy, this.#registry.getSourceProviders());
+    } catch {
+      return;
+    }
+    const plan = await this.#resolveLookaheadPlan(currentQueueItem, resolved);
+    try {
+      await this.#activeEngine.setPlaybackPlan(plan);
+    } catch (err) {
+      this.#emitError(currentQueueItem, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Reconciles Core's queue pointer after a queueAuthority:'engine' engine
+   * fires 'trackChanged' on its own (e.g. a gapless transition it drove
+   * internally via its plan, without Core calling load()/play() again).
+   * @param {{ queueItemId?: string }} [payload]
+   * @returns {Promise<void>}
+   */
+  async #reconcileEngineOwnedTrackChange(payload) {
+    const newQueueItemId = payload?.queueItemId;
+    if (!newQueueItemId) return;
+    const items = this.queue.getItems();
+    const newIndex = items.findIndex((i) => i.queueItemId === newQueueItemId);
+    if (newIndex === -1) return;
+    if (newIndex !== this.queue.getCurrentIndex()) {
+      this.queue.setCurrentIndex(newIndex);
+    }
+    this.#loadedQueueItemId = newQueueItemId;
+    this.#status = 'playing';
+    this.emit('trackChanged', items[newIndex]);
     this.emit('stateChanged');
   }
 
@@ -352,11 +504,25 @@ export class CorePlayer extends EventEmitter {
       }
     });
 
-    engine.on('ended', () => {
-      this.#enqueue(() => this.#advanceOnEnded()).catch((err) => {
-        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+    // queueAuthority: 'engine' engines drive their own queue advancement
+    // internally (via the plan handed to setPlaybackPlan) and report it
+    // through 'trackChanged' instead of 'ended' — Core reconciles its own
+    // queue pointer to match rather than treating every advance as playback
+    // finishing. queueAuthority: 'core' engines (the only kind that exists
+    // today) keep the original 'ended' -> advance-and-reload behavior.
+    if (engine.capabilities.queueAuthority === 'engine') {
+      engine.on('trackChanged', (payload) => {
+        this.#enqueue(() => this.#reconcileEngineOwnedTrackChange(payload)).catch((err) => {
+          this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        });
       });
-    });
+    } else {
+      engine.on('ended', () => {
+        this.#enqueue(() => this.#advanceOnEnded()).catch((err) => {
+          this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        });
+      });
+    }
 
     engine.on('error', (error) => {
       this.#emitError(this.queue.getCurrentItem(), error instanceof Error ? error.message : String(error));

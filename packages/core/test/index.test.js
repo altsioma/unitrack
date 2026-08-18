@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CorePlayer, TrackResolutionError } from '../src/index.js';
+import { CorePlayer, TrackResolutionError, PluginsNotInitializedError } from '../src/index.js';
 import { createMockSourceProvider, createMockPlaybackEngine } from './helpers/mockPlugins.js';
 import { makeTrack } from './helpers/fixtures.js';
 
@@ -16,6 +16,7 @@ test('the public entry point exports a working CorePlayer', async () => {
   core.setPolicy([{ kind: 'local' }]);
   core.queue.add(makeTrack('t1', [{ pluginId: 'local-fs', sourceId: 'l1', kind: 'local' }]));
 
+  await core.initializePlugins({});
   await core.play();
 
   assert.equal(core.getState().status, 'playing');
@@ -25,4 +26,12 @@ test('the public entry point exports TrackResolutionError', () => {
   const err = new TrackResolutionError('t1', []);
   assert.ok(err instanceof Error);
   assert.equal(err.trackId, 't1');
+});
+
+test('the public entry point exports PluginsNotInitializedError', async () => {
+  const core = new CorePlayer();
+  await assert.rejects(() => core.play(), (err) => {
+    assert.ok(err instanceof PluginsNotInitializedError);
+    return true;
+  });
 });

@@ -68,6 +68,16 @@ export function createLocalFolderPlaylistProvider({
   const extensionSet = new Set(extensions.map((ext) => ext.toLowerCase()));
   return {
     id,
+
+    /**
+     * @param {import('@unitrack/core/types').PluginContext} ctx
+     * @returns {Promise<void>}
+     */
+    async initialize(ctx) {},
+
+    /** @returns {Promise<void>} */
+    async dispose() {},
+
     /**
      * @param {import('@unitrack/core/types').PlaylistRef} playlistRef
      * @returns {Promise<import('@unitrack/core/types').LogicalTrack[]>}

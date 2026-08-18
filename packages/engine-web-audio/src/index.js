@@ -53,11 +53,37 @@ export function createWebAudioPlaybackEngine({
   return {
     id: 'web-audio',
 
+    // This engine drives one HTMLAudioElement at a time and relies on Core
+    // to feed it tracks one-by-one via load()+play() — it does not own the
+    // queue itself, so queueAuthority stays 'core'. gapless is not
+    // implemented (load() tears down and reloads the single <audio> src on
+    // every track). backgroundPlayback is false because a suspended
+    // WKWebView/background tab can stop this engine's JS timers same as any
+    // other in-page audio element.
+    capabilities: { gapless: false, backgroundPlayback: false, queueAuthority: 'core' },
+
+    /**
+     * @param {import('@unitrack/core/types').PluginContext} ctx
+     * @returns {Promise<void>}
+     */
+    async initialize(ctx) {},
+
+    /**
+     * Closes the underlying AudioContext, guarded so a repeated or
+     * post-close dispose() call is a no-op rather than throwing.
+     * @returns {Promise<void>}
+     */
+    async dispose() {
+      if (audioContext.state !== 'closed') {
+        await audioContext.close();
+      }
+    },
+
     /**
      * @param {import('@unitrack/core/types').ResolvedSource} resolved
-     * @returns {boolean}
+     * @returns {Promise<boolean>}
      */
-    canPlay(resolved) {
+    async canPlay(resolved) {
       if (!resolved.format) return true;
       const mime = FORMAT_MIME_TYPES[resolved.format];
       if (!mime) return true;
@@ -123,7 +149,7 @@ export function createWebAudioPlaybackEngine({
     },
 
     /**
-     * @param {'ended'|'error'|'progress'} event
+     * @param {'ended'|'error'|'progress'|'trackChanged'} event
      * @param {(payload?: any) => void} handler
      * @returns {void}
      */
@@ -139,6 +165,12 @@ export function createWebAudioPlaybackEngine({
           if (!loading) handler(mapMediaError(audio.error));
         });
       }
+      // 'trackChanged' is only emitted by queueAuthority: 'engine' engines
+      // that own the queue via setPlaybackPlan(). This engine's
+      // capabilities.queueAuthority is 'core', so it never fires one — the
+      // event name is accepted here (rather than throwing) purely so a host
+      // written against the general PlaybackEngine contract can register
+      // for it unconditionally without checking capabilities first.
     },
 
     /**

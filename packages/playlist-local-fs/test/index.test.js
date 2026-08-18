@@ -170,6 +170,12 @@ test('an empty directory resolves to an empty array', async () => {
   }
 });
 
+test('initialize and dispose resolve without throwing', async () => {
+  const provider = createLocalFolderPlaylistProvider();
+  await provider.initialize({});
+  await provider.dispose();
+});
+
 test('custom extensions and sourcePluginId config values are honored', async () => {
   const dir = await makeTempDir();
   try {

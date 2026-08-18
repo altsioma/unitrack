@@ -42,10 +42,18 @@ export class PluginRegistry {
 
   /**
    * @param {import('./types.js').ResolvedSource} resolved
-   * @returns {import('./types.js').PlaybackEngine | undefined}
+   * @returns {Promise<import('./types.js').PlaybackEngine | undefined>}
    */
-  getPlaybackEngineFor(resolved) {
-    return this.#playbackEngines.find((e) => e.canPlay(resolved));
+  async getPlaybackEngineFor(resolved) {
+    for (const engine of this.#playbackEngines) {
+      if (await engine.canPlay(resolved)) return engine;
+    }
+    return undefined;
+  }
+
+  /** @returns {import('./types.js').PlaybackEngine[]} */
+  getPlaybackEngines() {
+    return [...this.#playbackEngines];
   }
 
   /**

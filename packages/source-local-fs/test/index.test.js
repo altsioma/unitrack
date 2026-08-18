@@ -12,10 +12,21 @@ test('has the local-fs id and kind', () => {
   assert.equal(provider.kind, 'local');
 });
 
-test('canResolve returns true only for refs targeting this plugin', () => {
+test('canResolve returns true only for refs targeting this plugin', async () => {
   const provider = createLocalFileSourceProvider();
-  assert.equal(provider.canResolve({ pluginId: 'local-fs', sourceId: '/x', kind: 'local' }), true);
-  assert.equal(provider.canResolve({ pluginId: 'spotify', sourceId: '/x', kind: 'streaming' }), false);
+  assert.equal(await provider.canResolve({ pluginId: 'local-fs', sourceId: '/x', kind: 'local' }), true);
+  assert.equal(await provider.canResolve({ pluginId: 'spotify', sourceId: '/x', kind: 'streaming' }), false);
+});
+
+test('exposes offline capabilities and does not require revalidation', () => {
+  const provider = createLocalFileSourceProvider();
+  assert.deepEqual(provider.capabilities, { offline: true, requiresRevalidation: false });
+});
+
+test('initialize and dispose resolve without throwing', async () => {
+  const provider = createLocalFileSourceProvider();
+  await provider.initialize({});
+  await provider.dispose();
 });
 
 test('resolve returns a file:// URL and the format from the extension for an existing file', async () => {
@@ -69,4 +80,25 @@ test('resolve rejects when sourceId points at a directory', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('revalidate resolves valid:true with the same ref when the file is still readable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'unitrack-source-local-fs-'));
+  const filePath = join(dir, 'song.mp3');
+  await writeFile(filePath, 'not real audio, just bytes');
+  try {
+    const provider = createLocalFileSourceProvider();
+    const ref = { pluginId: 'local-fs', sourceId: filePath, kind: 'local' };
+    const result = await provider.revalidate(ref);
+    assert.deepEqual(result, { valid: true, ref });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('revalidate resolves valid:false with a reason when the file is gone', async () => {
+  const provider = createLocalFileSourceProvider();
+  const result = await provider.revalidate({ pluginId: 'local-fs', sourceId: '/definitely/does/not/exist.mp3', kind: 'local' });
+  assert.equal(result.valid, false);
+  assert.ok(typeof result.reason === 'string' && result.reason.length > 0);
 });

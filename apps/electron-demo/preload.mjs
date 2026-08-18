@@ -132,7 +132,7 @@ function summarizeState(state) {
   };
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   log('renderer', 'preload start', {
     node: process.versions.node,
     electron: process.versions.electron,
@@ -149,6 +149,17 @@ window.addEventListener('DOMContentLoaded', () => {
   core.registerPlaybackEngine(createWebAudioPlaybackEngine());
   core.setPolicy([{ kind: 'local' }]);
   log('renderer', 'core constructed; source-local-fs + engine-web-audio registered');
+
+  // v0.2.0 contract: every registered plugin's initialize() must run before
+  // the first play() — CorePlayer.play() throws PluginsNotInitializedError
+  // otherwise. host here is deliberately minimal; nothing in this demo's
+  // plugins reads config or host yet.
+  await core.initializePlugins({
+    log: (scope, message, detail) => log(`core:${scope}`, message, detail),
+    config: {},
+    host: { platform: 'electron', version: process.versions.electron },
+  });
+  log('renderer', 'core.initializePlugins complete');
 
   // The playlist provider stays in the renderer (plain node:fs, no dynamic
   // import, verified working). Tag reading does not — see main.js's
@@ -422,6 +433,15 @@ window.addEventListener('DOMContentLoaded', () => {
     const nextMode = REPEAT_CYCLE[(currentIndex + 1) % REPEAT_CYCLE.length];
     log('ui', `repeat -> ${nextMode}`);
     core.queue.setRepeatMode(nextMode);
+  });
+
+  // Best-effort cleanup (closes engine-web-audio's AudioContext) — fire and
+  // forget, since beforeunload cannot reliably await an async handler.
+  window.addEventListener('beforeunload', () => {
+    log('renderer', 'window closing, disposing core plugins');
+    core.dispose().catch((err) => {
+      log('renderer', 'core.dispose() failed', err instanceof Error ? err.message : String(err));
+    });
   });
 
   updateStatus();

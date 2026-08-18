@@ -8,6 +8,16 @@ import { titleFromFilename } from '@unitrack/util-fs';
 export function createLocalFileMetadataProvider({ id = 'metadata-local-fs' } = {}) {
   return {
     id,
+
+    /**
+     * @param {import('@unitrack/core/types').PluginContext} ctx
+     * @returns {Promise<void>}
+     */
+    async initialize(ctx) {},
+
+    /** @returns {Promise<void>} */
+    async dispose() {},
+
     /**
      * @param {import('@unitrack/core/types').MetadataQuery} query
      * @returns {Promise<import('@unitrack/core/types').TrackMetadata[]>}
