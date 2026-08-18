@@ -53,6 +53,38 @@ function formatTime(seconds) {
 /** @type {['off', 'all', 'one']} */
 const REPEAT_CYCLE = ['off', 'all', 'one'];
 
+/**
+ * Runs `mapper` over `items` with at most `limit` calls in flight at once.
+ * Unlike a bare Promise.all(items.map(mapper)), this bounds concurrency —
+ * important for folder-open, where `items` can be hundreds of files and
+ * each mapper call opens a file handle (via metadata parsing); running all
+ * of them at once risks exhausting OS file-descriptor limits (EMFILE) on a
+ * large library.
+ * @template T
+ * @template R
+ * @param {T[]} items
+ * @param {number} limit
+ * @param {(item: T) => Promise<R>} mapper
+ * @returns {Promise<R[]>}
+ */
+async function mapWithConcurrencyLimit(items, limit, mapper) {
+  /** @type {R[]} */
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]);
+    }
+  }
+  const workerCount = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+const METADATA_FETCH_CONCURRENCY = 8;
+
 window.addEventListener('DOMContentLoaded', () => {
   const core = new CorePlayer();
   core.registerSourceProvider(createLocalFileSourceProvider());
@@ -160,6 +192,20 @@ window.addEventListener('DOMContentLoaded', () => {
     updateSeek(payload.position, payload.duration);
   });
 
+  // Preload scripts run under Node, where an unhandled promise rejection
+  // is fatal by default (crashes the renderer) rather than just logging —
+  // unlike a plain browser page. Anything that slips past the try/catches
+  // below (an unexpected error shape, a future code path that forgets one)
+  // should surface as a visible status, not take the window down.
+  process.on('unhandledRejection', (/** @type {any} */ reason) => {
+    lastErrorText = `unhandled: ${reason instanceof Error ? reason.message : String(reason)}`;
+    updateStatus();
+  });
+  window.addEventListener('error', (/** @type {ErrorEvent} */ event) => {
+    lastErrorText = `unhandled: ${event.error instanceof Error ? event.error.message : String(event.error ?? event.message)}`;
+    updateStatus();
+  });
+
   requireElement('open-file').addEventListener('click', async () => {
     const filePath = await ipcRenderer.invoke('open-file-dialog');
     if (!filePath) return;
@@ -184,7 +230,7 @@ window.addEventListener('DOMContentLoaded', () => {
       updateStatus();
       return;
     }
-    const enrichedTracks = await Promise.all(tracks.map(async (track) => {
+    const enrichedTracks = await mapWithConcurrencyLimit(tracks, METADATA_FETCH_CONCURRENCY, async (track) => {
       const sourceRef = track.sources[0];
       if (!sourceRef || !metadataProvider.fetchForSource) return track;
       try {
@@ -196,7 +242,7 @@ window.addEventListener('DOMContentLoaded', () => {
         // rather than failing the whole folder-open.
         return track;
       }
-    }));
+    });
     core.queue.add(enrichedTracks);
     await maybeAutoPlay();
   });

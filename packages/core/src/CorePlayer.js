@@ -175,8 +175,17 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async #play() {
-    if (this.#status === 'playing') return;
-    if (this.#status === 'paused' && this.#activeEngine) {
+    // The queue's current pointer can move (queue.setCurrentIndex(),
+    // clicking a different queue item in a host UI) without going through
+    // next()/prev(), which always reload. play() must detect that case —
+    // otherwise it treats "playing"/"paused" as "nothing to do" purely
+    // from #status, silently resuming/no-op'ing on the stale engine
+    // instead of switching to the queue's actual current item.
+    const currentItem = this.queue.getCurrentItem();
+    const currentItemChanged = currentItem?.queueItemId !== this.#loadedQueueItemId;
+
+    if (this.#status === 'playing' && !currentItemChanged) return;
+    if (this.#status === 'paused' && this.#activeEngine && !currentItemChanged) {
       try {
         await this.#activeEngine.play();
       } catch (err) {

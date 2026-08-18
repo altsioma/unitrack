@@ -635,6 +635,70 @@ test('a direct queue.setCurrentIndex() pointer jump does not interrupt playback'
   assert.equal(engine.stopCalls, 0);
 });
 
+test('play() after queue.setCurrentIndex() to a different item while already playing switches to that item', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.play();
+
+  core.queue.setCurrentIndex(1);
+  await core.play();
+
+  assert.equal(core.getState().status, 'playing');
+  assert.equal(core.getState().currentQueueItem.track.id, 't2');
+  assert.deepEqual(engine.loaded, { url: 'file:///l2.flac' });
+});
+
+test('play() after queue.setCurrentIndex() to a different item while paused loads and plays the new item, not the old one', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.play();
+  await core.pause();
+
+  core.queue.setCurrentIndex(1);
+  await core.play();
+
+  assert.equal(core.getState().status, 'playing');
+  assert.equal(core.getState().currentQueueItem.track.id, 't2');
+  assert.deepEqual(engine.loaded, { url: 'file:///l2.flac' });
+});
+
+test('play() with no queue-item change while already playing stays a no-op (regression guard)', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  const trackChanged = [];
+  core.on('trackChanged', (item) => trackChanged.push(item));
+  await core.play();
+
+  await core.play();
+
+  assert.equal(trackChanged.length, 1);
+  assert.equal(engine.playCalls, 1);
+});
+
 test('normal next() navigation is unaffected by reconciliation', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({

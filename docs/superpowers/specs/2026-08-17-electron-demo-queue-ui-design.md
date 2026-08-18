@@ -184,3 +184,48 @@ landing on a stale or wrong path. Noted here as a repeat of the
 review-tooling pitfall from the volume spec's own review (there: an
 incomplete prompt; here: a sub-agent ignoring the provided diff/spec in
 favor of unreliable self-directed exploration) — not a real code issue.
+
+## Post-ship fixes from manual testing (2026-08-18)
+
+Manual testing surfaced two real bugs:
+
+1. **Clicking a different queue item while a track was already
+   playing/paused did nothing** (it only worked after `stop()`, or
+   naturally on the `'ended'` auto-advance). Root cause was in
+   `@unitrack/core`, not this app: `CorePlayer#play()` treated `#status
+   === 'playing'` as "nothing to do" and `#status === 'paused'` as
+   "just resume the active engine," without checking whether
+   `queue.getCurrentItem()` still matched what was actually loaded
+   (`#loadedQueueItemId`). `queue.setCurrentIndex()` moves the queue's
+   pointer without itself touching playback (by design — see "a direct
+   queue.setCurrentIndex() pointer jump does not interrupt playback" in
+   `CorePlayer.test.js`), so a UI that calls `setCurrentIndex()` then
+   `play()` — exactly what clicking a queue row does — hit this gap.
+   `next()`/`prev()` never had this problem since they always call
+   `#loadAndPlayCurrent()` unconditionally after moving. Fixed by having
+   `#play()` compare the queue's current item against `#loadedQueueItemId`
+   and always (re)load when they differ, regardless of `#status`. Three
+   regression tests added to `CorePlayer.test.js` covering the
+   already-playing case, the paused case, and a no-op guard (repeat
+   `play()` with no queue-item change still does nothing, per existing
+   behavior).
+2. **Opening a folder could crash the app** rather than showing an error.
+   Preload scripts run under Node, where — unlike a plain browser page —
+   an unhandled promise rejection is fatal by default (it terminates the
+   process instead of just logging). Every awaited call in the
+   open-folder path was already wrapped in try/catch, but as a safety net
+   against any error shape that isn't (now or in a future change), a
+   `process.on('unhandledRejection', ...)` and `window.addEventListener('error', ...)`
+   handler were added, both routing into the existing
+   `lastErrorText`/status-line mechanism instead of letting the renderer
+   go down silently. Separately, the metadata-enrichment step was changed
+   from an unbounded `Promise.all` over every file in the folder to a
+   concurrency-capped fetch (8 at a time via a small
+   `mapWithConcurrencyLimit` helper) — a large folder previously fired off
+   as many concurrent `parseFile()` calls (each opening a file handle) as
+   there were files, risking `EMFILE` on big libraries. Exact root cause
+   of the observed crash wasn't confirmed against a captured stack
+   trace/crash log, so this is defense-in-depth against the whole class of
+   "something escapes a try/catch and takes the renderer down" rather
+   than a single pinpointed fix — flagged here rather than claimed as a
+   definitively verified fix.
