@@ -83,7 +83,12 @@ async function mapWithConcurrencyLimit(items, limit, mapper) {
   return results;
 }
 
-const METADATA_FETCH_CONCURRENCY = 8;
+// Overridable so the folder-open crash can be bisected without a rebuild:
+// running with UNITRACK_METADATA_CONCURRENCY=1 serializes tag reads, which
+// separates "one specific file kills the renderer" from "N concurrent
+// parseFile calls kill it". Defaults to 1 while this is being diagnosed.
+const METADATA_FETCH_CONCURRENCY =
+  Number(process.env.UNITRACK_METADATA_CONCURRENCY) || 1;
 
 /**
  * Blocking log to the main process — see main.js's 'debug-log' handler for
@@ -240,7 +245,7 @@ window.addEventListener('DOMContentLoaded', () => {
     /** @type {import('@unitrack/core/types').LogicalTrack[]} */
     let tracks;
     try {
-      debugLog('open-folder: scanning folder');
+      debugLog(`open-folder: scanning folder (tag-read concurrency ${METADATA_FETCH_CONCURRENCY})`);
       tracks = await playlistProvider.fetchPlaylist({ pluginId: playlistProvider.id, playlistId: folderPath });
       debugLog(`open-folder: scan found ${tracks.length} track(s)`);
     } catch (err) {
