@@ -149,3 +149,196 @@ test('emits changed only when an operation actually mutates the queue', () => {
   queue.clear();
   assert.equal(fired, 7);
 });
+
+test('isShuffleEnabled defaults to false; setShuffle toggles it', () => {
+  const queue = new QueueManager();
+  assert.equal(queue.isShuffleEnabled(), false);
+  queue.setShuffle(true);
+  assert.equal(queue.isShuffleEnabled(), true);
+  queue.setShuffle(false);
+  assert.equal(queue.isShuffleEnabled(), false);
+});
+
+test('getRepeatMode defaults to "off"; setRepeatMode round-trips', () => {
+  const queue = new QueueManager();
+  assert.equal(queue.getRepeatMode(), 'off');
+  queue.setRepeatMode('all');
+  assert.equal(queue.getRepeatMode(), 'all');
+  queue.setRepeatMode('one');
+  assert.equal(queue.getRepeatMode(), 'one');
+});
+
+test('turning shuffle on with a track already current does not change the current item', () => {
+  const queue = new QueueManager();
+  queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c')]);
+  queue.setCurrentIndex(1);
+  queue.setShuffle(true);
+  assert.equal(queue.getCurrentIndex(), 1);
+  assert.equal(queue.getCurrentItem().track.id, 'b');
+});
+
+test('shuffle: moveNext from the start visits every remaining item exactly once (no repeats, full coverage)', () => {
+  for (let trial = 0; trial < 20; trial++) {
+    const queue = new QueueManager();
+    const items = queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c'), makeTrack('d'), makeTrack('e')]);
+    queue.setCurrentIndex(0);
+    queue.setShuffle(true);
+    const visited = new Set([0]);
+    for (let i = 0; i < items.length - 1; i++) {
+      assert.equal(queue.moveNext(), true);
+      visited.add(queue.getCurrentIndex());
+    }
+    assert.equal(visited.size, items.length);
+  }
+});
+
+test('shuffle: moveNext returns false once every item has been visited (repeat off)', () => {
+  const queue = new QueueManager();
+  const items = queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c')]);
+  queue.setCurrentIndex(0);
+  queue.setShuffle(true);
+  for (let i = 0; i < items.length - 1; i++) {
+    assert.equal(queue.moveNext(), true);
+  }
+  assert.equal(queue.moveNext(), false);
+});
+
+test('shuffle: movePrevious retraces real play history, not a new random pick', () => {
+  for (let trial = 0; trial < 20; trial++) {
+    const queue = new QueueManager();
+    queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c'), makeTrack('d')]);
+    queue.setCurrentIndex(0);
+    queue.setShuffle(true);
+    const before = queue.getCurrentIndex();
+    queue.moveNext();
+    assert.equal(queue.movePrevious(), true);
+    assert.equal(queue.getCurrentIndex(), before);
+  }
+});
+
+test('shuffle: movePrevious returns false at the start of history', () => {
+  const queue = new QueueManager();
+  queue.add([makeTrack('a'), makeTrack('b')]);
+  queue.setCurrentIndex(0);
+  queue.setShuffle(true);
+  assert.equal(queue.movePrevious(), false);
+});
+
+test('shuffle: after moving back, moveNext redoes the same forward step (no new random pick) until history diverges', () => {
+  const queue = new QueueManager();
+  queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c')]);
+  queue.setCurrentIndex(0);
+  queue.setShuffle(true);
+  queue.moveNext();
+  const afterFirstNext = queue.getCurrentIndex();
+  queue.movePrevious();
+  queue.moveNext();
+  assert.equal(queue.getCurrentIndex(), afterFirstNext);
+});
+
+test('linear: repeat "all" wraps moveNext to index 0 at the end of the queue', () => {
+  const queue = new QueueManager();
+  queue.add([makeTrack('a'), makeTrack('b')]);
+  queue.setCurrentIndex(1);
+  queue.setRepeatMode('all');
+  assert.equal(queue.moveNext(), true);
+  assert.equal(queue.getCurrentIndex(), 0);
+});
+
+test('linear: repeat "off" still returns false at the end of the queue (unchanged default)', () => {
+  const queue = new QueueManager();
+  queue.add([makeTrack('a'), makeTrack('b')]);
+  queue.setCurrentIndex(1);
+  assert.equal(queue.moveNext(), false);
+});
+
+test('repeat "all" never wraps movePrevious backward at the start (linear mode)', () => {
+  const queue = new QueueManager();
+  queue.add([makeTrack('a'), makeTrack('b')]);
+  queue.setCurrentIndex(0);
+  queue.setRepeatMode('all');
+  assert.equal(queue.movePrevious(), false);
+});
+
+test('repeat "all" never wraps movePrevious backward at the start of shuffle history', () => {
+  const queue = new QueueManager();
+  queue.add([makeTrack('a'), makeTrack('b')]);
+  queue.setCurrentIndex(0);
+  queue.setRepeatMode('all');
+  queue.setShuffle(true);
+  assert.equal(queue.movePrevious(), false);
+});
+
+test('shuffle + repeat "all": moveNext starts a new cycle instead of returning false once exhausted', () => {
+  const queue = new QueueManager();
+  const items = queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c')]);
+  queue.setCurrentIndex(0);
+  queue.setShuffle(true);
+  queue.setRepeatMode('all');
+  // 3x the queue length of consecutive successful moveNext() calls proves
+  // it keeps cycling well past exhausting the queue once.
+  for (let i = 0; i < items.length * 3; i++) {
+    assert.equal(queue.moveNext(), true, `moveNext() call #${i + 1} should still succeed under repeat:'all'`);
+  }
+});
+
+test('shuffle + repeat "all" with a single item: the same item repeats instead of stalling', () => {
+  const queue = new QueueManager();
+  queue.add(makeTrack('a'));
+  queue.setCurrentIndex(0);
+  queue.setShuffle(true);
+  queue.setRepeatMode('all');
+  for (let i = 0; i < 5; i++) {
+    assert.equal(queue.moveNext(), true);
+    assert.equal(queue.getCurrentItem().track.id, 'a');
+  }
+});
+
+test('shuffle: remove() mid-shuffle resets history (no stale index) and moveNext still lands on a real item', () => {
+  for (let trial = 0; trial < 10; trial++) {
+    const queue = new QueueManager();
+    const items = queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c'), makeTrack('d')]);
+    queue.setCurrentIndex(0);
+    queue.setShuffle(true);
+    queue.moveNext();
+    const currentItemBeforeRemove = queue.getCurrentItem();
+    // Remove an item that is deliberately NOT the currently-playing one —
+    // moveNext() picked randomly, so pick whichever queue item isn't it.
+    const toRemove = items.find((i) => i.queueItemId !== currentItemBeforeRemove.queueItemId);
+    queue.remove(toRemove.queueItemId);
+    // remove() deliberately resets shuffle history (a queue-shape change
+    // invalidates "already played" bookkeeping) — so there's legitimately
+    // nothing to go back to immediately after, and movePrevious() should
+    // say so rather than landing on a stale/incorrect index.
+    assert.equal(queue.movePrevious(), false);
+    assert.equal(queue.getCurrentItem().track.id, currentItemBeforeRemove.track.id);
+    assert.equal(queue.moveNext(), true);
+    const validIds = queue.getItems().map((i) => i.track.id);
+    assert.ok(validIds.includes(queue.getCurrentItem().track.id));
+  }
+});
+
+test('shuffle: reorder() mid-shuffle leaves moveNext/movePrevious landing on real, valid items', () => {
+  const queue = new QueueManager();
+  const items = queue.add([makeTrack('a'), makeTrack('b'), makeTrack('c')]);
+  queue.setCurrentIndex(0);
+  queue.setShuffle(true);
+  queue.reorder(items[2].queueItemId, 0);
+  assert.equal(queue.getCurrentItem().track.id, 'a');
+  assert.equal(queue.moveNext(), true);
+  const validIds = queue.getItems().map((i) => i.track.id);
+  assert.ok(validIds.includes(queue.getCurrentItem().track.id));
+  assert.equal(queue.movePrevious(), true);
+  assert.equal(queue.getCurrentItem().track.id, 'a');
+});
+
+test('setShuffle and setRepeatMode emit changed only when they actually change the value', () => {
+  const queue = new QueueManager();
+  let fired = 0;
+  queue.on('changed', () => { fired += 1; });
+  queue.setShuffle(true);
+  queue.setShuffle(true); // no-op, same value — must not emit
+  queue.setRepeatMode('all');
+  queue.setRepeatMode('all'); // no-op, same value — must not emit
+  assert.equal(fired, 2);
+});

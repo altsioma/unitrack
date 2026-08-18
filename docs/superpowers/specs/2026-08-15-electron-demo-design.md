@@ -137,6 +137,18 @@ this monorepo (`tsc --checkJs --strict`, `"lib": ["ES2022", "DOM"]` plus
 `@types/node`, since `main.js` is pure Node and `preload.mjs` is a
 Node+DOM hybrid).
 
+## Logging (added 2026-08-18)
+
+This app logs verbosely and unconditionally — main-process lifecycle and
+crash events, every IPC call, every UI interaction, and every
+`CorePlayer` event. That is a deliberate standing convention for this
+package rather than temporary debug code, and it is specified in full in
+the "Logging" section of
+`2026-08-17-electron-demo-queue-ui-design.md`. It follows directly from
+the "no automated tests, manual verification only" decision above: with
+no test signal, the terminal is the only signal, and a silent terminal
+turns every bug into several rounds of manual re-runs.
+
 ## Non-goals
 
 Restated from Scope: playlist UI, scrubbing/progress/volume controls,

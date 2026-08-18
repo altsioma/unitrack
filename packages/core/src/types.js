@@ -58,6 +58,8 @@
  * @property {(seconds: number) => Promise<void>} seek
  * @property {() => EngineState} getState
  * @property {(event: 'ended'|'error'|'progress', handler: (payload?: any) => void) => void} on
+ * @property {(volume: number) => void} setVolume
+ * @property {() => number} getVolume
  * @property {() => any} [getAudioGraphAnchor]
  */
 
@@ -103,6 +105,10 @@
  */
 
 /**
+ * @typedef {'off' | 'all' | 'one'} RepeatMode
+ */
+
+/**
  * @typedef {'idle' | 'loading' | 'playing' | 'paused' | 'error'} PlayerStatus
  */
 
@@ -114,6 +120,9 @@
  * @property {number} duration
  * @property {QueueItem[]} queue
  * @property {SourcePolicyRule[]} policy
+ * @property {boolean} shuffle
+ * @property {RepeatMode} repeatMode
+ * @property {number} volume
  */
 
 export {};

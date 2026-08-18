@@ -69,6 +69,8 @@ export function createFakeAudioContext() {
     /** @type {'running' | 'suspended' | 'closed'} */
     state: 'running',
     destination: {},
+    /** @type {any[]} */
+    _gainNodes: [],
     async resume() {
       this.state = 'running';
     },
@@ -85,6 +87,22 @@ export function createFakeAudioContext() {
           this.connectedTo = undefined;
         },
       };
+    },
+    /** @returns {any} */
+    createGain() {
+      const node = {
+        gain: { value: 1 },
+        connectedTo: undefined,
+        /** @param {any} destination */
+        connect(destination) {
+          this.connectedTo = destination;
+        },
+        disconnect() {
+          this.connectedTo = undefined;
+        },
+      };
+      this._gainNodes.push(node);
+      return node;
     },
   };
 }

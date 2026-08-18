@@ -11,6 +11,8 @@ export class CorePlayer extends EventEmitter {
   queue = new QueueManager();
   /** @type {import('./types.js').SourcePolicyRule[]} */
   #policy = [];
+  /** @type {number} */
+  #volume = 1;
   /** @type {import('./types.js').PlayerStatus} */
   #status = 'idle';
   /** @type {number} */
@@ -62,6 +64,22 @@ export class CorePlayer extends EventEmitter {
     this.#policy = policyRules;
   }
 
+  /** @param {number} volume @returns {void} */
+  setVolume(volume) {
+    if (!Number.isFinite(volume)) {
+      return;
+    }
+    this.#volume = Math.max(0, Math.min(1, volume));
+    if (this.#activeEngine) {
+      this.#activeEngine.setVolume(this.#volume);
+    }
+  }
+
+  /** @returns {number} */
+  getVolume() {
+    return this.#volume;
+  }
+
   /** @returns {import('./types.js').CoreState} */
   getState() {
     return {
@@ -71,11 +89,30 @@ export class CorePlayer extends EventEmitter {
       duration: this.#duration,
       queue: this.queue.getItems(),
       policy: this.#policy,
+      shuffle: this.queue.isShuffleEnabled(),
+      repeatMode: this.queue.getRepeatMode(),
+      volume: this.#volume,
     };
   }
 
-  /** @param {import('./types.js').CoreState} snapshot @returns {void} */
-  restoreState(snapshot) {
+  /** @param {import('./types.js').CoreState} snapshot @returns {Promise<void>} */
+  async restoreState(snapshot) {
+    return this.#enqueue(() => this.#restoreState(snapshot));
+  }
+
+  /** @param {import('./types.js').CoreState} snapshot @returns {Promise<void>} */
+  async #restoreState(snapshot) {
+    this.#loadedQueueItemId = undefined;
+    if (this.#activeEngine) {
+      try {
+        await this.#activeEngine.stop();
+      } catch (err) {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
+    this.#activeEngine = undefined;
+
     this.queue.clear();
     for (const item of snapshot.queue ?? []) {
       this.queue.add(item.track);
@@ -85,11 +122,14 @@ export class CorePlayer extends EventEmitter {
       ? snapshot.queue.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId)
       : -1;
     this.queue.setCurrentIndex(originalIndex);
+    this.queue.setShuffle(snapshot.shuffle ?? false);
+    this.queue.setRepeatMode(snapshot.repeatMode ?? 'off');
+    this.#volume = snapshot.volume ?? 1;
     this.#policy = snapshot.policy ?? [];
-    this.#loadedQueueItemId = undefined;
     this.#status = 'idle';
     this.#position = snapshot.position ?? 0;
     this.#duration = snapshot.duration ?? 0;
+    this.emit('stateChanged');
   }
 
   /** @returns {Promise<void>} */
@@ -135,8 +175,17 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async #play() {
-    if (this.#status === 'playing') return;
-    if (this.#status === 'paused' && this.#activeEngine) {
+    // The queue's current pointer can move (queue.setCurrentIndex(),
+    // clicking a different queue item in a host UI) without going through
+    // next()/prev(), which always reload. play() must detect that case —
+    // otherwise it treats "playing"/"paused" as "nothing to do" purely
+    // from #status, silently resuming/no-op'ing on the stale engine
+    // instead of switching to the queue's actual current item.
+    const currentItem = this.queue.getCurrentItem();
+    const currentItemChanged = currentItem?.queueItemId !== this.#loadedQueueItemId;
+
+    if (this.#status === 'playing' && !currentItemChanged) return;
+    if (this.#status === 'paused' && this.#activeEngine && !currentItemChanged) {
       try {
         await this.#activeEngine.play();
       } catch (err) {
@@ -230,7 +279,14 @@ export class CorePlayer extends EventEmitter {
       return;
     }
 
-    const engine = this.#registry.getPlaybackEngineFor(resolved);
+    /** @type {import('./types.js').PlaybackEngine | undefined} */
+    let engine;
+    try {
+      engine = this.#registry.getPlaybackEngineFor(resolved);
+    } catch (err) {
+      this.#emitError(queueItem, err instanceof Error ? err.message : String(err));
+      return;
+    }
     if (!engine) {
       this.#emitError(queueItem, 'no playback engine registered for resolved source');
       return;
@@ -252,6 +308,10 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async #advanceOnEnded() {
+    if (this.queue.getRepeatMode() === 'one' && this.queue.getCurrentItem()) {
+      await this.#loadAndPlayCurrent();
+      return;
+    }
     const moved = this.queue.moveNext();
     if (moved) {
       await this.#loadAndPlayCurrent();
@@ -275,6 +335,7 @@ export class CorePlayer extends EventEmitter {
   /** @param {import('./types.js').PlaybackEngine} engine @returns {void} */
   #bindEngine(engine) {
     this.#activeEngine = engine;
+    engine.setVolume(this.#volume);
     if (this.#boundEngines.has(engine)) return;
     this.#boundEngines.add(engine);
 
