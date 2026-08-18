@@ -39,6 +39,16 @@ app.on('render-process-gone', (event, webContents, details) => {
   console.error('[main] renderer process gone:', details);
 });
 
+// Synchronous debug channel: sendSync blocks the renderer until the main
+// process has printed, so the last line printed before a renderer crash is
+// reliably the last step the renderer actually reached. Async logging
+// (console-message mirroring) can lose the final messages when the process
+// dies instantly. Temporary — for diagnosing the folder-open crash.
+ipcMain.on('debug-log', (event, message) => {
+  console.log('[debug]', message);
+  event.returnValue = null;
+});
+
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],

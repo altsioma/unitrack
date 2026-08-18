@@ -85,6 +85,20 @@ async function mapWithConcurrencyLimit(items, limit, mapper) {
 
 const METADATA_FETCH_CONCURRENCY = 8;
 
+/**
+ * Blocking log to the main process — see main.js's 'debug-log' handler for
+ * why this is synchronous. Temporary diagnostic for the folder-open crash.
+ * @param {string} message
+ * @returns {void}
+ */
+function debugLog(message) {
+  try {
+    ipcRenderer.sendSync('debug-log', message);
+  } catch {
+    // Never let diagnostics themselves break the app.
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   const core = new CorePlayer();
   core.registerSourceProvider(createLocalFileSourceProvider());
@@ -219,13 +233,18 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   requireElement('open-folder').addEventListener('click', async () => {
+    debugLog('open-folder: invoking dialog');
     const folderPath = await ipcRenderer.invoke('open-folder-dialog');
+    debugLog(`open-folder: dialog returned ${folderPath ?? '(cancelled)'}`);
     if (!folderPath) return;
     /** @type {import('@unitrack/core/types').LogicalTrack[]} */
     let tracks;
     try {
+      debugLog('open-folder: scanning folder');
       tracks = await playlistProvider.fetchPlaylist({ pluginId: playlistProvider.id, playlistId: folderPath });
+      debugLog(`open-folder: scan found ${tracks.length} track(s)`);
     } catch (err) {
+      debugLog(`open-folder: scan FAILED: ${err instanceof Error ? err.message : String(err)}`);
       lastErrorText = `open-folder: ${err instanceof Error ? err.message : String(err)}`;
       updateStatus();
       return;
@@ -234,7 +253,9 @@ window.addEventListener('DOMContentLoaded', () => {
       const sourceRef = track.sources[0];
       if (!sourceRef || !metadataProvider.fetchForSource) return track;
       try {
+        debugLog(`open-folder: reading tags of ${sourceRef.sourceId}`);
         const metadata = await metadataProvider.fetchForSource(sourceRef);
+        debugLog(`open-folder: tags OK for ${sourceRef.sourceId}`);
         // coverArtUrl is a base64 data: URL — for a track with embedded
         // album art this can be hundreds of KB to a few MB per track, and
         // nothing in this app renders it (see spec's Out of Scope). Folder
@@ -246,15 +267,19 @@ window.addEventListener('DOMContentLoaded', () => {
         // Dropping it here costs nothing, since it's unused.
         const { coverArtUrl, ...displayMetadata } = metadata;
         return { ...track, metadata: { ...track.metadata, ...displayMetadata } };
-      } catch {
+      } catch (err) {
         // Tag read failed for this one file (corrupt/unsupported) — keep
         // the playlist provider's filename-derived placeholder metadata
         // rather than failing the whole folder-open.
+        debugLog(`open-folder: tags FAILED for ${sourceRef.sourceId}: ${err instanceof Error ? err.message : String(err)}`);
         return track;
       }
     });
+    debugLog('open-folder: enrichment done, adding to queue');
     core.queue.add(enrichedTracks);
+    debugLog('open-folder: queue updated, maybe autoplay');
     await maybeAutoPlay();
+    debugLog('open-folder: done');
   });
 
   requireElement('play').addEventListener('click', () => core.play());
