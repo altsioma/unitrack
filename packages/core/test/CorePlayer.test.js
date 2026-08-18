@@ -1202,7 +1202,7 @@ test('a queueAuthority: "engine" engine receives a lookahead plan via setPlaybac
   assert.equal(core.getState().status, 'playing');
 });
 
-test('a queueAuthority: "engine" engine\'s "ended" event is ignored — Core waits for "trackChanged" instead', async () => {
+test('a queueAuthority: "engine" engine\'s genuine "ended" (no more plan to hand off to) advances the queue, same as a core-owned engine\'s does', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -1219,10 +1219,16 @@ test('a queueAuthority: "engine" engine\'s "ended" event is ignored — Core wai
   await core.initializePlugins({});
   await core.play();
 
+  // Simulates the engine having genuinely exhausted its plan (e.g. it's a
+  // real single-track engine that never advertised gapless chaining, or it
+  // has reached the true end of a shorter-than-expected window) — Core
+  // must not just sit there forever; #advanceOnEnded's normal
+  // queue.moveNext() + reload path applies exactly as it would for a
+  // core-owned engine.
   engine._simulate('ended');
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(core.getState().currentQueueItem.track.id, 't1', 'no core-driven advance happened');
+  assert.equal(core.getState().currentQueueItem.track.id, 't2');
   assert.equal(core.getState().status, 'playing');
 });
 
@@ -1278,4 +1284,32 @@ test('queue mutations refresh the lookahead plan of an active queueAuthority: "e
 
   assert.notEqual(engine.plan, planBefore);
   assert.deepEqual(engine.plan.map((p) => p.queueItemId), core.queue.getItems().map((i) => i.queueItemId));
+});
+
+test('repeat: "one" pads a queueAuthority: "engine" engine\'s lookahead plan with the current item instead of the actual next queue item', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({
+    id: 'gapless-engine',
+    capabilities: { gapless: true, backgroundPlayback: true, queueAuthority: 'engine' },
+  });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.setRepeatMode('one');
+  const [first] = core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.initializePlugins({});
+
+  await core.play();
+
+  // Without repeat-mode awareness, an engine-owned engine would have
+  // pre-buffered t2 as "next" (the actual next queue item) and would
+  // auto-advance into it on its own — bypassing repeat: 'one' entirely.
+  // Every entry in the plan should instead be the current item, so the
+  // engine's own internal auto-advance just replays it.
+  assert.equal(engine.plan.length, 3);
+  assert.ok(engine.plan.every((p) => p.queueItemId === first.queueItemId));
 });

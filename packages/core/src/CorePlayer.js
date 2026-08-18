@@ -377,12 +377,6 @@ export class CorePlayer extends EventEmitter {
    * 'engine' engine's setPlaybackPlan(), starting at the current queue item
    * and resolving up to DEFAULT_LOOKAHEAD_WINDOW items ahead of it.
    *
-   * Known limitation: walks queue.getItems() in plain array order, not
-   * through QueueManager's shuffle history — there is no non-mutating
-   * "peek the next N items" method on QueueManager yet. Acceptable for now
-   * since no queueAuthority:'engine' engine exists yet to exercise shuffle
-   * interaction; revisit once one does.
-   *
    * @param {import('./types.js').QueueItem} currentQueueItem
    * @param {import('./types.js').ResolvedSource} currentResolved
    * @returns {Promise<import('./types.js').PlaybackPlanEntry[]>}
@@ -390,10 +384,36 @@ export class CorePlayer extends EventEmitter {
   async #resolveLookaheadPlan(currentQueueItem, currentResolved) {
     /** @type {import('./types.js').PlaybackPlanEntry[]} */
     const plan = [{ queueItemId: currentQueueItem.queueItemId, resolved: currentResolved }];
+
+    // repeat: 'one' means the current item plays again, not whatever's
+    // next in the queue. An engine-owned engine has no visibility into
+    // repeat mode on its own — setPlaybackPlan's entries are the only
+    // thing it's told — so without this it would auto-advance into the
+    // actual next queue item on its own instead of replaying the current
+    // one. Padding the window with repeated copies of the current entry
+    // makes the engine's own internal auto-advance do the right thing
+    // without it ever needing to know repeat mode exists.
+    if (this.queue.getRepeatMode() === 'one') {
+      while (plan.length < DEFAULT_LOOKAHEAD_WINDOW) {
+        plan.push({ queueItemId: currentQueueItem.queueItemId, resolved: currentResolved });
+      }
+      return plan;
+    }
+
     const items = this.queue.getItems();
     const currentIdx = items.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId);
     if (currentIdx === -1) return plan;
     const providers = this.#registry.getSourceProviders();
+    // Known limitations: this walks queue.getItems() in plain array order,
+    // not through QueueManager's shuffle history — there is no
+    // non-mutating "peek the next N items" method yet — and it does not
+    // wrap around for repeat: 'all'. At the last item under repeat: 'all',
+    // the plan simply runs out; the engine reports 'ended' (see
+    // #bindEngine), and #advanceOnEnded's existing queue.moveNext() call
+    // wraps correctly on its own, just via a full reload rather than a
+    // gapless hand-off. Acceptable for now — revisit both alongside each
+    // other if a future engine needs a genuinely gapless shuffle/wrap
+    // transition too.
     for (let i = currentIdx + 1; i < items.length && plan.length < DEFAULT_LOOKAHEAD_WINDOW; i += 1) {
       const item = items[i];
       try {
@@ -504,21 +524,30 @@ export class CorePlayer extends EventEmitter {
       }
     });
 
-    // queueAuthority: 'engine' engines drive their own queue advancement
-    // internally (via the plan handed to setPlaybackPlan) and report it
-    // through 'trackChanged' instead of 'ended' — Core reconciles its own
-    // queue pointer to match rather than treating every advance as playback
-    // finishing. queueAuthority: 'core' engines (the only kind that exists
-    // today) keep the original 'ended' -> advance-and-reload behavior.
+    // 'ended' is bound unconditionally for both authority modes: a
+    // core-owned engine reports it after every single track (unchanged
+    // from before). An engine-owned engine drives its own queue
+    // advancement internally (via the plan handed to setPlaybackPlan) and
+    // reports each successful internal hand-off through 'trackChanged'
+    // instead — Core reconciles its own queue pointer to match rather than
+    // treating that as playback finishing — but it still reports 'ended'
+    // once it has genuinely run out of plan to hand off to internally (no
+    // further pre-resolved entry ready). Since the lookahead plan is kept
+    // topped up as the engine consumes it (see #refreshLookaheadPlan, and
+    // the queue 'changed' handler above that triggers it), that only
+    // happens once the engine has reached the real end of what
+    // #resolveLookaheadPlan could resolve — so #advanceOnEnded's existing
+    // repeat/shuffle-aware queue.moveNext() call is the right thing to run
+    // either way, and an engine-owned engine doesn't need — and must not
+    // build — a second, separate "what's next" implementation of its own.
+    engine.on('ended', () => {
+      this.#enqueue(() => this.#advanceOnEnded()).catch((err) => {
+        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+      });
+    });
     if (engine.capabilities.queueAuthority === 'engine') {
       engine.on('trackChanged', (payload) => {
         this.#enqueue(() => this.#reconcileEngineOwnedTrackChange(payload)).catch((err) => {
-          this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
-        });
-      });
-    } else {
-      engine.on('ended', () => {
-        this.#enqueue(() => this.#advanceOnEnded()).catch((err) => {
           this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
         });
       });
