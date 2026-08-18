@@ -4,19 +4,30 @@ import { createHash } from 'node:crypto';
 import { createSubsonicSourceProvider } from '../src/index.js';
 import { startTestServer, pingHandler } from './helpers/testServer.js';
 
-test("canResolve returns true only for a ref targeting this provider's id", () => {
+test("canResolve returns true only for a ref targeting this provider's id", async () => {
   const provider = createSubsonicSourceProvider({ baseUrl: 'http://example.invalid', username: 'u', password: 'p' });
-  assert.equal(provider.canResolve({ pluginId: 'subsonic', sourceId: 'x', kind: 'self-hosted' }), true);
-  assert.equal(provider.canResolve({ pluginId: 'local-fs', sourceId: 'x', kind: 'local' }), false);
+  assert.equal(await provider.canResolve({ pluginId: 'subsonic', sourceId: 'x', kind: 'self-hosted' }), true);
+  assert.equal(await provider.canResolve({ pluginId: 'local-fs', sourceId: 'x', kind: 'local' }), false);
 });
 
-test('id defaults to "subsonic" and can be overridden, so two servers can be registered side by side', () => {
+test('id defaults to "subsonic" and can be overridden, so two servers can be registered side by side', async () => {
   const a = createSubsonicSourceProvider({ baseUrl: 'http://a.invalid', username: 'u', password: 'p' });
   const b = createSubsonicSourceProvider({ baseUrl: 'http://b.invalid', username: 'u', password: 'p', id: 'subsonic-backup' });
   assert.equal(a.id, 'subsonic');
   assert.equal(b.id, 'subsonic-backup');
-  assert.equal(a.canResolve({ pluginId: 'subsonic-backup', sourceId: 'x', kind: 'self-hosted' }), false);
-  assert.equal(b.canResolve({ pluginId: 'subsonic-backup', sourceId: 'x', kind: 'self-hosted' }), true);
+  assert.equal(await a.canResolve({ pluginId: 'subsonic-backup', sourceId: 'x', kind: 'self-hosted' }), false);
+  assert.equal(await b.canResolve({ pluginId: 'subsonic-backup', sourceId: 'x', kind: 'self-hosted' }), true);
+});
+
+test('exposes online, revalidation-required capabilities', () => {
+  const provider = createSubsonicSourceProvider({ baseUrl: 'http://example.invalid', username: 'u', password: 'p' });
+  assert.deepEqual(provider.capabilities, { offline: false, requiresRevalidation: true });
+});
+
+test('initialize and dispose resolve without throwing', async () => {
+  const provider = createSubsonicSourceProvider({ baseUrl: 'http://example.invalid', username: 'u', password: 'p' });
+  await provider.initialize({});
+  await provider.dispose();
 });
 
 test('resolve() against a healthy server returns a correctly-signed stream.view URL', async () => {
@@ -94,6 +105,33 @@ test('resolve() rejects when the server never responds, within the configured ti
     const start = Date.now();
     await assert.rejects(() => provider.resolve({ pluginId: 'subsonic', sourceId: 't1', kind: 'self-hosted' }));
     assert.ok(Date.now() - start < 2000, 'rejected promptly via the configured timeout, not a default/hung wait');
+  } finally {
+    await close();
+  }
+});
+
+test('revalidate() re-signs a fresh URL and returns valid:true when the server is healthy', async () => {
+  const { baseUrl, close } = await startTestServer(pingHandler({ status: 'ok' }));
+  try {
+    const provider = createSubsonicSourceProvider({ baseUrl, username: 'alice', password: 'sesame' });
+    const ref = { pluginId: 'subsonic', sourceId: 't1', kind: 'self-hosted' };
+    const result = await provider.revalidate(ref);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.ref, ref);
+  } finally {
+    await close();
+  }
+});
+
+test('revalidate() returns valid:false with a reason when the server rejects credentials', async () => {
+  const { baseUrl, close } = await startTestServer(
+    pingHandler({ status: 'failed', errorCode: 40, errorMessage: 'Wrong username or password.' })
+  );
+  try {
+    const provider = createSubsonicSourceProvider({ baseUrl, username: 'alice', password: 'wrong' });
+    const result = await provider.revalidate({ pluginId: 'subsonic', sourceId: 't1', kind: 'self-hosted' });
+    assert.equal(result.valid, false);
+    assert.match(result.reason ?? '', /Wrong username or password\..*code 40/);
   } finally {
     await close();
   }

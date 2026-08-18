@@ -1,26 +1,60 @@
 /**
- * @param {{ id: string, kind: string, resolveImpl: (ref: import('../../src/types.js').SourceRef) => Promise<import('../../src/types.js').ResolvedSource>, canResolveImpl?: (ref: import('../../src/types.js').SourceRef) => boolean }} config
+ * @param {{
+ *   id: string,
+ *   kind: string,
+ *   resolveImpl: (ref: import('../../src/types.js').SourceRef) => Promise<import('../../src/types.js').ResolvedSource>,
+ *   canResolveImpl?: (ref: import('../../src/types.js').SourceRef) => boolean,
+ *   capabilities?: import('../../src/types.js').SourceProviderCapabilities,
+ *   revalidateImpl?: (ref: import('../../src/types.js').SourceRef) => Promise<import('../../src/types.js').RevalidationResult>,
+ * }} config
  * @returns {import('../../src/types.js').SourceProvider}
  */
-export function createMockSourceProvider({ id, kind, resolveImpl, canResolveImpl }) {
+export function createMockSourceProvider({
+  id, kind, resolveImpl, canResolveImpl,
+  capabilities = { offline: true, requiresRevalidation: false },
+  revalidateImpl,
+}) {
   return {
     id,
     kind,
-    canResolve: canResolveImpl ?? (() => true),
+    capabilities,
+    async initialize(ctx) {},
+    async dispose() {},
+    async canResolve(ref) {
+      return (canResolveImpl ?? (() => true))(ref);
+    },
     resolve: resolveImpl,
+    async revalidate(ref) {
+      if (revalidateImpl) return revalidateImpl(ref);
+      return { valid: false, reason: 'mock provider does not support revalidation' };
+    },
   };
 }
 
 /**
- * @param {{ id?: string, canPlayImpl?: (resolved: import('../../src/types.js').ResolvedSource) => boolean }} [config]
- * @returns {import('../../src/types.js').PlaybackEngine & { loaded: any, playCalls: number, pauseCalls: number, stopCalls: number, seekCalls: number[], volume: number, volumeCalls: number[], _simulate: (event: string, payload?: any) => void, _listenerCount: (event: string) => number }}
+ * @param {{
+ *   id?: string,
+ *   canPlayImpl?: (resolved: import('../../src/types.js').ResolvedSource) => boolean,
+ *   capabilities?: import('../../src/types.js').PlaybackEngineCapabilities,
+ *   planImpl?: (plan: import('../../src/types.js').PlaybackPlanEntry[]) => Promise<void>,
+ * }} [config]
+ * @returns {import('../../src/types.js').PlaybackEngine & { loaded: any, playCalls: number, pauseCalls: number, stopCalls: number, seekCalls: number[], volume: number, volumeCalls: number[], plan: import('../../src/types.js').PlaybackPlanEntry[] | null, _simulate: (event: string, payload?: any) => void, _listenerCount: (event: string) => number }}
  */
-export function createMockPlaybackEngine({ id, canPlayImpl } = {}) {
+export function createMockPlaybackEngine({
+  id, canPlayImpl,
+  capabilities = { gapless: false, backgroundPlayback: false, queueAuthority: 'core' },
+  planImpl,
+} = {}) {
   /** @type {Map<string, Set<Function>>} */
   const listeners = new Map();
-  return {
+  const engine = {
     id: id ?? 'mock-engine',
-    canPlay: canPlayImpl ?? (() => true),
+    capabilities,
+    async initialize(ctx) {},
+    async dispose() {},
+    async canPlay(resolved) {
+      return (canPlayImpl ?? (() => true))(resolved);
+    },
     loaded: null,
     playCalls: 0,
     pauseCalls: 0,
@@ -28,6 +62,7 @@ export function createMockPlaybackEngine({ id, canPlayImpl } = {}) {
     seekCalls: [],
     volume: 1,
     volumeCalls: [],
+    plan: /** @type {import('../../src/types.js').PlaybackPlanEntry[] | null} */ (null),
     async load(resolved) { this.loaded = resolved; },
     async play() { this.playCalls += 1; },
     async pause() { this.pauseCalls += 1; },
@@ -47,4 +82,11 @@ export function createMockPlaybackEngine({ id, canPlayImpl } = {}) {
       return listeners.get(event)?.size ?? 0;
     },
   };
+  if (capabilities.queueAuthority === 'engine') {
+    engine.setPlaybackPlan = async (plan) => {
+      engine.plan = plan;
+      if (planImpl) await planImpl(plan);
+    };
+  }
+  return engine;
 }

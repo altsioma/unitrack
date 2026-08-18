@@ -74,6 +74,9 @@ export function createFakeAudioContext() {
     async resume() {
       this.state = 'running';
     },
+    async close() {
+      this.state = 'closed';
+    },
     /** @param {any} audioElement */
     createMediaElementSource(audioElement) {
       return {

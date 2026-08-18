@@ -94,3 +94,9 @@ test('search() always rejects with the documented "not supported" message', asyn
     /search\(\) is not supported by @unitrack\/metadata-local-fs/
   );
 });
+
+test('initialize and dispose resolve without throwing', async () => {
+  const provider = createLocalFileMetadataProvider();
+  await provider.initialize({});
+  await provider.dispose();
+});

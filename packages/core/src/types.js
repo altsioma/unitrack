@@ -3,6 +3,7 @@
  * @property {string} pluginId
  * @property {string} sourceId
  * @property {string} kind
+ * @property {string} [displayName]
  */
 
 /**
@@ -32,12 +33,35 @@
  */
 
 /**
+ * @typedef {Object} PluginContext
+ * @property {(scope: string, message: string, detail?: unknown) => void} log
+ * @property {Record<string, unknown>} config
+ * @property {{ platform: 'electron'|'web'|'ios'|'android', version: string }} host
+ */
+
+/**
+ * @typedef {Object} RevalidationResult
+ * @property {boolean} valid
+ * @property {SourceRef} [ref]
+ * @property {string} [reason]
+ */
+
+/**
+ * @typedef {Object} SourceProviderCapabilities
+ * @property {boolean} offline
+ * @property {boolean} requiresRevalidation
+ */
+
+/**
  * @typedef {Object} SourceProvider
  * @property {string} id
  * @property {string} kind
- * @property {(ref: SourceRef) => boolean} canResolve
+ * @property {SourceProviderCapabilities} capabilities
+ * @property {(ctx: PluginContext) => Promise<void>} initialize
+ * @property {(ref: SourceRef) => Promise<boolean>} canResolve
  * @property {(ref: SourceRef) => Promise<ResolvedSource>} resolve
- * @property {() => Promise<void>} [dispose]
+ * @property {(ref: SourceRef) => Promise<RevalidationResult>} revalidate
+ * @property {() => Promise<void>} dispose
  */
 
 /**
@@ -48,19 +72,36 @@
  */
 
 /**
+ * @typedef {Object} PlaybackPlanEntry
+ * @property {string} queueItemId
+ * @property {ResolvedSource} resolved
+ */
+
+/**
+ * @typedef {Object} PlaybackEngineCapabilities
+ * @property {boolean} gapless
+ * @property {boolean} backgroundPlayback
+ * @property {'core'|'engine'} queueAuthority
+ */
+
+/**
  * @typedef {Object} PlaybackEngine
  * @property {string} id
- * @property {(resolved: ResolvedSource) => boolean} canPlay
+ * @property {PlaybackEngineCapabilities} capabilities
+ * @property {(ctx: PluginContext) => Promise<void>} initialize
+ * @property {(resolved: ResolvedSource) => Promise<boolean>} canPlay
  * @property {(resolved: ResolvedSource) => Promise<void>} load
  * @property {() => Promise<void>} play
  * @property {() => Promise<void>} pause
  * @property {() => Promise<void>} stop
  * @property {(seconds: number) => Promise<void>} seek
  * @property {() => EngineState} getState
- * @property {(event: 'ended'|'error'|'progress', handler: (payload?: any) => void) => void} on
+ * @property {(event: 'ended'|'error'|'progress'|'trackChanged', handler: (payload?: any) => void) => void} on
  * @property {(volume: number) => void} setVolume
  * @property {() => number} getVolume
+ * @property {() => Promise<void>} dispose
  * @property {() => any} [getAudioGraphAnchor]
+ * @property {(plan: PlaybackPlanEntry[]) => Promise<void>} [setPlaybackPlan] - required when capabilities.queueAuthority === 'engine'
  */
 
 /**
@@ -81,8 +122,10 @@
 /**
  * @typedef {Object} MetadataProvider
  * @property {string} id
+ * @property {(ctx: PluginContext) => Promise<void>} initialize
  * @property {(query: MetadataQuery) => Promise<TrackMetadata[]>} search
  * @property {(ref: SourceRef) => Promise<TrackMetadata>} [fetchForSource]
+ * @property {() => Promise<void>} dispose
  */
 
 /**
@@ -100,8 +143,10 @@
 /**
  * @typedef {Object} PlaylistProvider
  * @property {string} id
+ * @property {(ctx: PluginContext) => Promise<void>} initialize
  * @property {(playlistRef: PlaylistRef) => Promise<LogicalTrack[]>} fetchPlaylist
  * @property {() => Promise<PlaylistSummary[]>} [listPlaylists]
+ * @property {() => Promise<void>} dispose
  */
 
 /**

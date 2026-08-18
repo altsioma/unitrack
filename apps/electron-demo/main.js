@@ -106,6 +106,14 @@ ipcMain.on('get-config', (event) => {
 });
 
 const metadataProvider = createLocalFileMetadataProvider();
+// Not gated behind CorePlayer.initializePlugins() — this provider isn't
+// registered with CorePlayer (it's used directly via fetch-metadata below),
+// so its initialize() is called here instead, once, at startup.
+metadataProvider.initialize({
+  log,
+  config: {},
+  host: { platform: 'electron', version: process.versions.electron },
+}).catch((err) => log('main', 'metadataProvider.initialize() failed', err));
 
 /** @returns {void} */
 function createWindow() {
