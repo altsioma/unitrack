@@ -17,7 +17,27 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'index.html'));
+
+  // Mirror renderer/preload console output (console.log/warn/error from
+  // index.html or preload.mjs) into this same terminal, so debugging
+  // doesn't require opening DevTools separately.
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    console.log(`[renderer] ${message} (${sourceId}:${line})`);
+  });
+  win.webContents.on('unresponsive', () => {
+    console.error('[main] renderer window became unresponsive');
+  });
+  win.webContents.on('responsive', () => {
+    console.error('[main] renderer window became responsive again');
+  });
 }
+
+// Fires when the renderer's process itself goes down (crash, OOM kill,
+// killed by the OS, etc.) — the actual event to look at for "the app
+// crashed" reports, since a plain JS exception alone doesn't produce this.
+app.on('render-process-gone', (event, webContents, details) => {
+  console.error('[main] renderer process gone:', details);
+});
 
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog({
