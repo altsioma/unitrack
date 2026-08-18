@@ -766,3 +766,117 @@ test('restoreState() does not trigger a spurious reconciliation stop during the 
   assert.equal(engine.stopCalls, 1);
   assert.equal(core.getState().queue.length, 3);
 });
+
+test('repeat "one": the engine ending naturally replays the same queue item instead of advancing', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  core.queue.setRepeatMode('one');
+  await core.play();
+
+  const beforeIndex = core.queue.getCurrentIndex();
+  const beforeItemId = core.getState().currentQueueItem.queueItemId;
+  const loadCallsBefore = engine.playCalls;
+
+  engine._simulate('ended');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.queue.getCurrentIndex(), beforeIndex);
+  assert.equal(core.getState().currentQueueItem.queueItemId, beforeItemId);
+  assert.equal(core.getState().currentQueueItem.track.id, 't1');
+  assert.deepEqual(engine.loaded, { url: 'file:///l1.flac' });
+  assert.ok(engine.playCalls > loadCallsBefore);
+  assert.equal(core.getState().status, 'playing');
+});
+
+test('repeat "one" does not block a manual next() from moving to a different track', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  core.queue.setRepeatMode('one');
+  await core.play();
+
+  await core.next();
+
+  assert.equal(core.getState().currentQueueItem.track.id, 't2');
+  assert.deepEqual(engine.loaded, { url: 'file:///l2.flac' });
+});
+
+test('getState reflects shuffle and repeatMode; restoreState round-trips them', async () => {
+  const core = new CorePlayer();
+  core.queue.add([makeTrack('t1'), makeTrack('t2')]);
+  core.queue.setShuffle(true);
+  core.queue.setRepeatMode('all');
+  const snapshot = core.getState();
+  assert.equal(snapshot.shuffle, true);
+  assert.equal(snapshot.repeatMode, 'all');
+
+  const restored = new CorePlayer();
+  await restored.restoreState(snapshot);
+  const restoredState = restored.getState();
+  assert.equal(restoredState.shuffle, true);
+  assert.equal(restoredState.repeatMode, 'all');
+});
+
+test('restoreState defaults shuffle/repeatMode to false/"off" for a snapshot missing those fields', async () => {
+  const core = new CorePlayer();
+  core.queue.add(makeTrack('t1'));
+  const snapshot = core.getState();
+  delete snapshot.shuffle;
+  delete snapshot.repeatMode;
+
+  const restored = new CorePlayer();
+  await restored.restoreState(snapshot);
+  const restoredState = restored.getState();
+  assert.equal(restoredState.shuffle, false);
+  assert.equal(restoredState.repeatMode, 'off');
+});
+
+test('repeat "one": if setCurrentIndex(-1) clears the current item before "ended" fires, it falls back to normal advance instead of hanging with no current item', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  core.queue.setRepeatMode('one');
+  await core.play();
+
+  // setCurrentIndex(-1) deselects without removing anything from the
+  // queue, so it does NOT go through remove()'s "item vanished from the
+  // queue entirely" reconciliation path (#reconcileMissingCurrentItem) —
+  // both items are still present in getItems(), just nothing is
+  // "current" anymore. This isolates the repeat-one branch's own
+  // robustness (it must not blindly call #loadAndPlayCurrent() against
+  // an empty current-item) from that unrelated, pre-existing safety net.
+  core.queue.setCurrentIndex(-1);
+  assert.equal(core.queue.getCurrentItem(), undefined);
+
+  engine._simulate('ended');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // There's nothing to "repeat" (no current item), so it falls back to
+  // ordinary moveNext() behavior — which, from index -1 with items still
+  // in the queue, lands on the first item and keeps playing rather than
+  // silently hanging at whatever status it was in before 'ended' fired.
+  assert.equal(core.getState().status, 'playing');
+  assert.equal(core.getState().currentQueueItem.track.id, 't1');
+});
