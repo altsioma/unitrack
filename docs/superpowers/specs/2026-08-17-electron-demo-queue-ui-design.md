@@ -319,3 +319,56 @@ Notes:
   current). Not attempted here — a major-version Electron upgrade is its
   own piece of work, and the IPC split is the better architecture
   regardless, since it keeps Node-side plugins out of the renderer.
+
+## Logging (convention for this app, 2026-08-18)
+
+**`apps/electron-demo` logs verbosely and unconditionally.** This is a
+deliberate standing rule for this package, not leftover debug scaffolding
+to be cleaned up later.
+
+Why: this app is development-only (`electron .`, never packaged, no
+automated tests by design) and it is the only place where `@unitrack`'s
+packages run inside a real host. It is therefore both the place where
+integration bugs actually surface and the place with the least automated
+signal. The folder-open crash took several diagnostic rounds — each one
+costing a manual run by the user — almost entirely because the terminal
+was silent and every round had to add logging back in. The rule that
+came out of that: **anything worth knowing during a crash must already be
+in the log before the crash happens.**
+
+What is logged:
+
+- *Main process* — startup with Electron/Chrome/Node/platform versions,
+  window lifecycle (`dom-ready`, `did-finish-load`, `did-fail-load`,
+  `preload-error`, `unresponsive`/`responsive`, `destroyed`),
+  `render-process-gone` and `child-process-gone` with full details,
+  `uncaughtException`/`unhandledRejection`, and every IPC call with its
+  arguments, outcome and duration (via a `handleWithLogging` wrapper, so
+  handlers don't each repeat it).
+- *Renderer* — preload start and "wiring complete", every UI interaction
+  (each button, queue-row click, reorder, remove, seek, volume,
+  shuffle/repeat), every `CorePlayer` event (`stateChanged`,
+  `trackChanged`, `queueChanged`, `error`), each step of Open File/Open
+  Folder including scan timing and per-file tag failures, and
+  `unhandledRejection`/`window.onerror`.
+
+Two rules keep it usable rather than merely loud:
+
+1. **Renderer logs go over a synchronous IPC channel** (`renderer-log`
+   via `sendSync`), not just `console.log`. `console.log` is mirrored to
+   the terminal too (main listens to `console-message`), but
+   asynchronously — a renderer that dies instantly loses exactly the
+   final messages that matter. With `sendSync` the last line printed is
+   reliably the last step the renderer reached. Verified against a real
+   Electron run that the channel tolerates every payload shape used here,
+   including `Error` instances and DOM nodes.
+2. **High-frequency events are throttled, not logged raw.**
+   `positionChanged` fires several times a second and is logged on a
+   5-second heartbeat; the volume slider logs on `change` (drag released)
+   rather than `input` (every pixel), while still *applying* volume on
+   every `input`. State objects are summarized rather than dumped whole,
+   since `CoreState` contains the entire queue.
+
+When adding a feature to this app, add its logging in the same pass — a
+new IPC channel goes through `handleWithLogging`, a new UI control logs
+its interaction, a new async step logs entry and outcome.

@@ -84,12 +84,64 @@ async function mapWithConcurrencyLimit(items, limit, mapper) {
 
 const METADATA_FETCH_CONCURRENCY = 8;
 
+// --- Logging -------------------------------------------------------------
+//
+// Verbose and unconditional, by design — see the design spec's "Logging"
+// section. Everything goes to the main process over a *synchronous*
+// channel: sendSync blocks the renderer until main has printed, so if the
+// renderer dies the last line in the terminal is reliably the last step it
+// actually reached. Plain console.log is mirrored too (main.js listens to
+// 'console-message'), but asynchronously — it can lose exactly the final
+// messages that matter during a crash.
+
+/**
+ * @param {string} scope
+ * @param {string} message
+ * @param {unknown} [detail]
+ * @returns {void}
+ */
+function log(scope, message, detail) {
+  try {
+    ipcRenderer.sendSync('renderer-log', { scope, message, detail });
+  } catch {
+    // Diagnostics must never be the thing that breaks the app.
+  }
+}
+
+// positionChanged fires several times a second; logging every one would
+// bury everything else. Logged at a slow heartbeat instead, which is
+// enough to show that playback is progressing and where it stalled.
+const POSITION_LOG_INTERVAL_MS = 5000;
+
+/**
+ * Serializes CorePlayer state for logging — the full state object contains
+ * the entire queue, which is far too noisy to print on every change.
+ * @param {import('@unitrack/core/types').CoreState} state
+ * @returns {object}
+ */
+function summarizeState(state) {
+  return {
+    status: state.status,
+    track: state.currentQueueItem?.track.metadata.title ?? null,
+    queueLength: state.queue.length,
+    position: Math.round(state.position),
+    duration: Math.round(state.duration),
+    volume: state.volume,
+    shuffle: state.shuffle,
+    repeatMode: state.repeatMode,
+  };
+}
 
 window.addEventListener('DOMContentLoaded', () => {
+  log('renderer', 'preload start', {
+    node: process.versions.node,
+    electron: process.versions.electron,
+  });
   const core = new CorePlayer();
   core.registerSourceProvider(createLocalFileSourceProvider());
   core.registerPlaybackEngine(createWebAudioPlaybackEngine());
   core.setPolicy([{ kind: 'local' }]);
+  log('renderer', 'core constructed; source-local-fs + engine-web-audio registered');
 
   // The playlist provider stays in the renderer (plain node:fs, no dynamic
   // import, verified working). Tag reading does not — see main.js's
@@ -133,14 +185,24 @@ window.addEventListener('DOMContentLoaded', () => {
       const meta = item.track.metadata;
       titleSpan.textContent = meta.artist ? `${meta.title} — ${meta.artist}` : meta.title;
       titleSpan.addEventListener('click', () => {
+        log('ui', `queue row clicked: index ${index}`, { title: meta.title });
         core.queue.setCurrentIndex(index);
         core.play();
       });
       li.appendChild(titleSpan);
 
-      addButton(li, { label: '▲', disabled: index === 0, onClick: () => core.queue.reorder(item.queueItemId, index - 1) });
-      addButton(li, { label: '▼', disabled: index === items.length - 1, onClick: () => core.queue.reorder(item.queueItemId, index + 1) });
-      addButton(li, { label: '✕', onClick: () => core.queue.remove(item.queueItemId) });
+      addButton(li, { label: '▲', disabled: index === 0, onClick: () => {
+        log('ui', `move up: index ${index}`);
+        core.queue.reorder(item.queueItemId, index - 1);
+      } });
+      addButton(li, { label: '▼', disabled: index === items.length - 1, onClick: () => {
+        log('ui', `move down: index ${index}`);
+        core.queue.reorder(item.queueItemId, index + 1);
+      } });
+      addButton(li, { label: '✕', onClick: () => {
+        log('ui', `remove: index ${index}`, { title: meta.title });
+        core.queue.remove(item.queueItemId);
+      } });
 
       queueListEl.appendChild(li);
     });
@@ -172,17 +234,33 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  core.on('stateChanged', updateStatus);
-  core.on('trackChanged', () => {
+  core.on('stateChanged', () => {
+    log('core', 'stateChanged', summarizeState(core.getState()));
+    updateStatus();
+  });
+  core.on('trackChanged', (/** @type {any} */ queueItem) => {
+    log('core', 'trackChanged', {
+      queueItemId: queueItem?.queueItemId,
+      title: queueItem?.track.metadata.title,
+      artist: queueItem?.track.metadata.artist,
+      sourceId: queueItem?.track.sources[0]?.sourceId,
+    });
     lastErrorText = undefined;
     updateStatus();
     renderQueue();
   });
   core.on('queueChanged', () => {
+    log('core', 'queueChanged', {
+      length: core.queue.getItems().length,
+      currentIndex: core.queue.getCurrentIndex(),
+      shuffle: core.queue.isShuffleEnabled(),
+      repeatMode: core.queue.getRepeatMode(),
+    });
     renderQueue();
     updateShuffleRepeat();
   });
   core.on('error', (/** @type {any} */ payload) => {
+    log('core', 'ERROR', payload);
     const failedSources = Array.isArray(payload.failedSources) ? payload.failedSources : [];
     const detail = failedSources
       .map((/** @type {any} */ s) => `${s.pluginId}: ${s.reason}`)
@@ -190,7 +268,16 @@ window.addEventListener('DOMContentLoaded', () => {
     lastErrorText = detail ? `${payload.reason} (${detail})` : payload.reason;
     updateStatus();
   });
+  let lastPositionLogAt = 0;
   core.on('positionChanged', (/** @type {any} */ payload) => {
+    const now = Date.now();
+    if (now - lastPositionLogAt >= POSITION_LOG_INTERVAL_MS) {
+      lastPositionLogAt = now;
+      log('core', 'position', {
+        position: Math.round(payload.position),
+        duration: Math.round(payload.duration),
+      });
+    }
     updateSeek(payload.position, payload.duration);
   });
 
@@ -200,34 +287,49 @@ window.addEventListener('DOMContentLoaded', () => {
   // below (an unexpected error shape, a future code path that forgets one)
   // should surface as a visible status, not take the window down.
   process.on('unhandledRejection', (/** @type {any} */ reason) => {
+    log('renderer', 'UNHANDLED REJECTION', reason);
     lastErrorText = `unhandled: ${reason instanceof Error ? reason.message : String(reason)}`;
     updateStatus();
   });
   window.addEventListener('error', (/** @type {ErrorEvent} */ event) => {
+    log('renderer', 'UNCAUGHT ERROR', { message: event.message, filename: event.filename, lineno: event.lineno });
     lastErrorText = `unhandled: ${event.error instanceof Error ? event.error.message : String(event.error ?? event.message)}`;
     updateStatus();
   });
 
   requireElement('open-file').addEventListener('click', async () => {
+    log('ui', 'Open File clicked');
     const filePath = await ipcRenderer.invoke('open-file-dialog');
-    if (!filePath) return;
+    if (!filePath) {
+      log('ui', 'Open File cancelled');
+      return;
+    }
     const title = filePath.split(/[\\/]/).pop() ?? filePath;
     core.queue.add({
       id: filePath,
       metadata: { artist: '', album: '', title },
       sources: [{ pluginId: 'local-fs', sourceId: filePath, kind: 'local' }],
     });
+    log('ui', 'Open File: track appended', { title });
     await maybeAutoPlay();
   });
 
   requireElement('open-folder').addEventListener('click', async () => {
+    log('ui', 'Open Folder clicked');
     const folderPath = await ipcRenderer.invoke('open-folder-dialog');
-    if (!folderPath) return;
+    if (!folderPath) {
+      log('ui', 'Open Folder cancelled');
+      return;
+    }
     /** @type {import('@unitrack/core/types').LogicalTrack[]} */
     let tracks;
+    const scanStartedAt = Date.now();
     try {
+      log('ui', `scanning folder ${folderPath}`);
       tracks = await playlistProvider.fetchPlaylist({ pluginId: playlistProvider.id, playlistId: folderPath });
+      log('ui', `scan found ${tracks.length} track(s) in ${Date.now() - scanStartedAt}ms`);
     } catch (err) {
+      log('ui', 'scan FAILED', err);
       lastErrorText = `open-folder: ${err instanceof Error ? err.message : String(err)}`;
       updateStatus();
       return;
@@ -239,18 +341,32 @@ window.addEventListener('DOMContentLoaded', () => {
       // A failed tag read (corrupt/unsupported file) keeps the playlist
       // provider's filename-derived placeholder metadata rather than
       // failing the whole folder-open.
-      if (!result?.ok) return track;
+      if (!result?.ok) {
+        log('ui', `tags unavailable, keeping filename for ${sourceRef.sourceId}`, result?.error);
+        return track;
+      }
       return { ...track, metadata: { ...track.metadata, ...result.metadata } };
     });
+    log('ui', `enrichment done for ${enrichedTracks.length} track(s), appending to queue`);
     core.queue.add(enrichedTracks);
     await maybeAutoPlay();
+    log('ui', 'Open Folder complete');
   });
 
-  requireElement('play').addEventListener('click', () => core.play());
-  requireElement('pause').addEventListener('click', () => core.pause());
-  requireElement('stop').addEventListener('click', () => core.stop());
-  requireElement('prev').addEventListener('click', () => core.prev());
-  requireElement('next').addEventListener('click', () => core.next());
+  /** @type {Array<[string, () => Promise<void>]>} */
+  const transportButtons = [
+    ['play', () => core.play()],
+    ['pause', () => core.pause()],
+    ['stop', () => core.stop()],
+    ['prev', () => core.prev()],
+    ['next', () => core.next()],
+  ];
+  for (const [id, action] of transportButtons) {
+    requireElement(id).addEventListener('click', () => {
+      log('ui', `${id} clicked`);
+      action();
+    });
+  }
 
   for (const eventName of ['mousedown', 'touchstart']) {
     seekEl.addEventListener(eventName, () => {
@@ -259,21 +375,32 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   seekEl.addEventListener('change', () => {
     scrubbing = false;
+    log('ui', `seek to ${seekEl.value}s`);
     core.seek(Number(seekEl.value));
   });
 
   volumeEl.value = String(core.getVolume());
+  volumeEl.addEventListener('change', () => {
+    // 'change' rather than 'input' for logging purposes: 'input' fires on
+    // every pixel of slider drag, which would flood the log. The volume
+    // itself is still applied on every 'input' below, so dragging stays
+    // responsive.
+    log('ui', `volume set to ${volumeEl.value}`);
+  });
   volumeEl.addEventListener('input', () => {
     core.setVolume(Number(volumeEl.value));
   });
 
   shuffleEl.addEventListener('click', () => {
-    core.queue.setShuffle(!core.queue.isShuffleEnabled());
+    const next = !core.queue.isShuffleEnabled();
+    log('ui', `shuffle -> ${next ? 'on' : 'off'}`);
+    core.queue.setShuffle(next);
   });
 
   repeatEl.addEventListener('click', () => {
     const currentIndex = REPEAT_CYCLE.indexOf(core.queue.getRepeatMode());
     const nextMode = REPEAT_CYCLE[(currentIndex + 1) % REPEAT_CYCLE.length];
+    log('ui', `repeat -> ${nextMode}`);
     core.queue.setRepeatMode(nextMode);
   });
 
@@ -281,4 +408,5 @@ window.addEventListener('DOMContentLoaded', () => {
   updateShuffleRepeat();
   renderQueue();
   updateSeek(0, 0);
+  log('renderer', 'preload wiring complete, UI ready');
 });
