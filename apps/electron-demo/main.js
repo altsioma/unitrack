@@ -1,8 +1,19 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createLocalFileMetadataProvider } from '@unitrack/metadata-local-fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Tag reading lives in the main process, not the renderer, because
+// `music-metadata` lazily `import()`s its per-format parser — and a
+// dynamic import() inside an ESM preload script hard-crashes Electron
+// 31's renderer (render-process-gone { reason: 'crashed', exitCode: 5 },
+// no catchable exception). This reproduces with a bare
+// `await import('node:path')`, so it is the dynamic import itself, not
+// anything specific to music-metadata or to any one audio file. The main
+// process has no such problem. See the design spec for the full writeup.
+const metadataProvider = createLocalFileMetadataProvider();
 
 /** @returns {void} */
 function createWindow() {
@@ -39,16 +50,6 @@ app.on('render-process-gone', (event, webContents, details) => {
   console.error('[main] renderer process gone:', details);
 });
 
-// Synchronous debug channel: sendSync blocks the renderer until the main
-// process has printed, so the last line printed before a renderer crash is
-// reliably the last step the renderer actually reached. Async logging
-// (console-message mirroring) can lose the final messages when the process
-// dies instantly. Temporary — for diagnosing the folder-open crash.
-ipcMain.on('debug-log', (event, message) => {
-  console.log('[debug]', message);
-  event.returnValue = null;
-});
-
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -64,6 +65,28 @@ ipcMain.handle('open-folder-dialog', async () => {
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+});
+
+/**
+ * Reads tags for one already-known local file. Returns a result object
+ * rather than throwing, so a single unreadable/corrupt file degrades to
+ * the caller's placeholder metadata instead of rejecting the IPC call.
+ */
+ipcMain.handle('fetch-metadata', async (event, /** @type {any} */ sourceRef) => {
+  if (!metadataProvider.fetchForSource) {
+    return { ok: false, error: 'metadata provider has no fetchForSource' };
+  }
+  try {
+    const metadata = await metadataProvider.fetchForSource(sourceRef);
+    // coverArtUrl is a base64 data: URL (up to a few MB for embedded album
+    // art). Nothing in this demo renders it (see the spec's Out of Scope),
+    // so it is dropped here rather than serialized across IPC and held in
+    // the renderer's queue for every track.
+    const { coverArtUrl, ...displayMetadata } = metadata;
+    return { ok: true, metadata: displayMetadata };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 });
 
 app.whenReady().then(createWindow);

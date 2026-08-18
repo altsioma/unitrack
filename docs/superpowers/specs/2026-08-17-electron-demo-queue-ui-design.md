@@ -230,7 +230,7 @@ Manual testing surfaced two real bugs:
    than a single pinpointed fix — flagged here rather than claimed as a
    definitively verified fix.
 
-## Folder-open crash: root cause confirmed (2026-08-18)
+## Folder-open crash: FIRST HYPOTHESIS, WRONG — superseded below (2026-08-18)
 
 The `render-process-gone` diagnostic added above pinned it down:
 `{ reason: 'crashed', exitCode: 5 }` on macOS. That exact signature
@@ -260,3 +260,62 @@ The earlier `mapWithConcurrencyLimit` and `unhandledRejection`/`error`
 safety net (previous amendment) are still worth keeping — they guard
 against transient fd/memory spikes and any future uncaught JS error
 respectively — but neither was the actual cause here.
+
+
+## Folder-open crash: actual root cause, reproduced and fixed (2026-08-18)
+
+The two hypotheses above (V8 OOM from `coverArtUrl`; unbounded
+concurrency) were both **wrong**. Recorded here rather than deleted,
+because the reasoning that produced them — pattern-matching a crash
+signature to a known bug report without reproducing it — is the mistake
+worth remembering.
+
+**How it was actually found.** Step-by-step synchronous logging through
+the Open Folder path showed the renderer dying inside
+`metadataProvider.fetchForSource()`, with no `tags OK`/`tags FAILED`
+following. Serializing tag reads (concurrency 1) moved the crash to the
+*first* file, ruling out concurrency. The same file parsed fine outside
+Electron under both Node 20 (Electron 31's Node) and Node 22, ruling out
+the file and the library version.
+
+The crash was then **reproduced standalone** — Electron 31.7.7 + a
+minimal main/preload pair — and bisected:
+
+- `parseFile(...)` → renderer crash
+- `parseBuffer(...)` (file read separately, buffer handed in) → crash
+- `await import('strtok3')` → crash
+- **`await import('node:path')` → crash**
+
+So the trigger is **any dynamic `import()` inside an ESM preload script**
+in Electron 31's renderer — not `music-metadata`, not any audio file, not
+memory. `music-metadata` only trips it because it lazily `import()`s its
+per-format parser. The failure surfaces as
+`render-process-gone { reason: 'crashed', exitCode: 5 }` with no
+catchable JS exception, which is why the earlier `unhandledRejection` /
+`window.onerror` safety net never fired. The same
+`music-metadata` calls run **fine in the main process** (verified,
+including Cyrillic tags).
+
+**Fix.** Tag reading moves to the main process behind a `fetch-metadata`
+IPC handler, mirroring how the file/folder dialogs already work; the
+renderer no longer imports `@unitrack/metadata-local-fs` at all. Verified
+end-to-end in the standalone reproduction: renderer survives, tags
+(including Cyrillic) come back intact. `@unitrack/metadata-local-fs`
+itself is unchanged — it was never at fault.
+
+Notes:
+
+- `@unitrack/playlist-local-fs` **stays in the renderer**: it uses plain
+  `node:fs/promises` with no dynamic import, and was verified working
+  there. Every other first-party package was grepped for dynamic
+  `import()` — none uses it, so nothing else is exposed to this.
+- `coverArtUrl` is still dropped, now in the main process before it
+  crosses IPC. The justification is no longer the (incorrect) OOM claim,
+  just that nothing renders it and there's no reason to serialize
+  megabytes per track.
+- Concurrency-capped enrichment (8 at a time) is kept as sensible
+  hygiene, not as a fix.
+- A longer-term alternative is upgrading Electron (31 is well behind
+  current). Not attempted here — a major-version Electron upgrade is its
+  own piece of work, and the IPC split is the better architecture
+  regardless, since it keeps Node-side plugins out of the renderer.
