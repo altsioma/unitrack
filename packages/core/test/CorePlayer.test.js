@@ -880,3 +880,119 @@ test('repeat "one": if setCurrentIndex(-1) clears the current item before "ended
   assert.equal(core.getState().status, 'playing');
   assert.equal(core.getState().currentQueueItem.track.id, 't1');
 });
+
+test('getVolume defaults to 1; setVolume round-trips', () => {
+  const core = new CorePlayer();
+  assert.equal(core.getVolume(), 1);
+  core.setVolume(0.4);
+  assert.equal(core.getVolume(), 0.4);
+});
+
+test('setVolume(NaN) is a no-op — volume stays at its previous value', () => {
+  const core = new CorePlayer();
+  core.setVolume(0.4);
+  core.setVolume(NaN);
+  assert.equal(core.getVolume(), 0.4);
+});
+
+test('setVolume(NaN) does not propagate to the active engine', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  await core.play();
+  core.setVolume(0.3);
+
+  core.setVolume(NaN);
+
+  assert.equal(engine.getVolume(), 0.3);
+  assert.deepEqual(engine.volumeCalls.at(-1), 0.3);
+});
+
+test('setVolume while a track is loaded calls the active engine\'s setVolume immediately', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+  await core.play();
+
+  core.setVolume(0.3);
+
+  assert.equal(engine.getVolume(), 0.3);
+  assert.deepEqual(engine.volumeCalls.at(-1), 0.3);
+});
+
+test('a volume set before playback starts is applied to the engine once a track loads', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1'));
+
+  core.setVolume(0.7);
+  assert.equal(engine.volumeCalls.length, 0); // nothing loaded yet, nothing to apply to
+
+  await core.play();
+
+  assert.equal(engine.getVolume(), 0.7);
+});
+
+test('volume set on one track carries over when moving to the next track', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  core.setVolume(0.2);
+  await core.play();
+
+  await core.next();
+
+  assert.equal(engine.getVolume(), 0.2);
+});
+
+test('getState reflects volume; restoreState round-trips it', async () => {
+  const core = new CorePlayer();
+  core.queue.add(makeTrack('t1'));
+  core.setVolume(0.6);
+  const snapshot = core.getState();
+  assert.equal(snapshot.volume, 0.6);
+
+  const restored = new CorePlayer();
+  await restored.restoreState(snapshot);
+  assert.equal(restored.getState().volume, 0.6);
+  assert.equal(restored.getVolume(), 0.6);
+});
+
+test('restoreState defaults volume to 1 for a snapshot missing that field', async () => {
+  const core = new CorePlayer();
+  core.queue.add(makeTrack('t1'));
+  const snapshot = core.getState();
+  delete snapshot.volume;
+
+  const restored = new CorePlayer();
+  await restored.restoreState(snapshot);
+  assert.equal(restored.getState().volume, 1);
+});

@@ -11,6 +11,8 @@ export class CorePlayer extends EventEmitter {
   queue = new QueueManager();
   /** @type {import('./types.js').SourcePolicyRule[]} */
   #policy = [];
+  /** @type {number} */
+  #volume = 1;
   /** @type {import('./types.js').PlayerStatus} */
   #status = 'idle';
   /** @type {number} */
@@ -62,6 +64,22 @@ export class CorePlayer extends EventEmitter {
     this.#policy = policyRules;
   }
 
+  /** @param {number} volume @returns {void} */
+  setVolume(volume) {
+    if (!Number.isFinite(volume)) {
+      return;
+    }
+    this.#volume = Math.max(0, Math.min(1, volume));
+    if (this.#activeEngine) {
+      this.#activeEngine.setVolume(this.#volume);
+    }
+  }
+
+  /** @returns {number} */
+  getVolume() {
+    return this.#volume;
+  }
+
   /** @returns {import('./types.js').CoreState} */
   getState() {
     return {
@@ -73,6 +91,7 @@ export class CorePlayer extends EventEmitter {
       policy: this.#policy,
       shuffle: this.queue.isShuffleEnabled(),
       repeatMode: this.queue.getRepeatMode(),
+      volume: this.#volume,
     };
   }
 
@@ -105,6 +124,7 @@ export class CorePlayer extends EventEmitter {
     this.queue.setCurrentIndex(originalIndex);
     this.queue.setShuffle(snapshot.shuffle ?? false);
     this.queue.setRepeatMode(snapshot.repeatMode ?? 'off');
+    this.#volume = snapshot.volume ?? 1;
     this.#policy = snapshot.policy ?? [];
     this.#status = 'idle';
     this.#position = snapshot.position ?? 0;
@@ -306,6 +326,7 @@ export class CorePlayer extends EventEmitter {
   /** @param {import('./types.js').PlaybackEngine} engine @returns {void} */
   #bindEngine(engine) {
     this.#activeEngine = engine;
+    engine.setVolume(this.#volume);
     if (this.#boundEngines.has(engine)) return;
     this.#boundEngines.add(engine);
 

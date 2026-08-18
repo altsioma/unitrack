@@ -58,6 +58,8 @@
  * @property {(seconds: number) => Promise<void>} seek
  * @property {() => EngineState} getState
  * @property {(event: 'ended'|'error'|'progress', handler: (payload?: any) => void) => void} on
+ * @property {(volume: number) => void} setVolume
+ * @property {() => number} getVolume
  * @property {() => any} [getAudioGraphAnchor]
  */
 
@@ -120,6 +122,7 @@
  * @property {SourcePolicyRule[]} policy
  * @property {boolean} shuffle
  * @property {RepeatMode} repeatMode
+ * @property {number} volume
  */
 
 export {};

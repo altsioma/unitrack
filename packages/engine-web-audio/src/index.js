@@ -36,7 +36,9 @@ export function createWebAudioPlaybackEngine({
   const audio = new AudioConstructor();
   const audioContext = new AudioContextConstructor();
   const sourceNode = audioContext.createMediaElementSource(audio);
-  sourceNode.connect(audioContext.destination);
+  const gainNode = audioContext.createGain();
+  sourceNode.connect(gainNode);
+  gainNode.connect(audioContext.destination);
 
   let buffering = false;
   audio.addEventListener('waiting', () => { buffering = true; });
@@ -137,6 +139,22 @@ export function createWebAudioPlaybackEngine({
           if (!loading) handler(mapMediaError(audio.error));
         });
       }
+    },
+
+    /**
+     * @param {number} volume
+     * @returns {void}
+     */
+    setVolume(volume) {
+      if (!Number.isFinite(volume)) {
+        return;
+      }
+      gainNode.gain.value = Math.max(0, Math.min(1, volume));
+    },
+
+    /** @returns {number} */
+    getVolume() {
+      return gainNode.gain.value;
     },
 
     /** @returns {MediaElementAudioSourceNode} */

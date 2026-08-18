@@ -139,13 +139,19 @@ test('error handler fires with a mapped Error on the native error event', () => 
   assert.match(errors[0].message, /MEDIA_ERR_NETWORK/);
 });
 
-test('getAudioGraphAnchor returns the media element source node connected to the context destination', () => {
+test('getAudioGraphAnchor returns the media element source node, routed to the destination through the volume GainNode', () => {
   const audio = createFakeAudioElement();
   const audioContext = createFakeAudioContext();
   const { engine } = makeEngine(audio, audioContext);
   const anchor = engine.getAudioGraphAnchor();
   assert.equal(anchor.audioElement, audio);
-  assert.equal(anchor.connectedTo, audioContext.destination);
+  // Volume (see the GainNode tests below) inserts a node between the
+  // source and the destination, so the source no longer connects to the
+  // destination directly — it connects to the GainNode, which connects
+  // to the destination.
+  const gainNode = audioContext._gainNodes[0];
+  assert.equal(anchor.connectedTo, gainNode);
+  assert.equal(gainNode.connectedTo, audioContext.destination);
 });
 
 test('a media error during load() does not also fire the persistent error handler', async () => {
@@ -195,4 +201,40 @@ test('play resumes a suspended audio context before playing', async () => {
   assert.equal(resumeCalled, true);
   assert.equal(audioContext.state, 'running');
   assert.equal(audio.paused, false);
+});
+
+test('getVolume defaults to 1 before any setVolume call', () => {
+  const { engine } = makeEngine();
+  assert.equal(engine.getVolume(), 1);
+});
+
+test('setVolume then getVolume round-trips, and updates the GainNode wired into the graph', () => {
+  const { engine, audioContext } = makeEngine();
+  engine.setVolume(0.5);
+  assert.equal(engine.getVolume(), 0.5);
+  assert.equal(audioContext._gainNodes[0].gain.value, 0.5);
+});
+
+test('setVolume clamps values above 1 to 1 and below 0 to 0', () => {
+  const { engine } = makeEngine();
+  engine.setVolume(1.5);
+  assert.equal(engine.getVolume(), 1);
+  engine.setVolume(-0.3);
+  assert.equal(engine.getVolume(), 0);
+});
+
+test('setVolume(NaN) is a no-op — GainNode keeps its previous value', () => {
+  const { engine, audioContext } = makeEngine();
+  engine.setVolume(0.6);
+  engine.setVolume(NaN);
+  assert.equal(engine.getVolume(), 0.6);
+  assert.equal(audioContext._gainNodes[0].gain.value, 0.6);
+});
+
+test('the GainNode is wired between the MediaElementAudioSourceNode and the AudioContext destination', () => {
+  const { engine, audioContext } = makeEngine();
+  const anchor = engine.getAudioGraphAnchor();
+  const gainNode = audioContext._gainNodes[0];
+  assert.equal(anchor.connectedTo, gainNode);
+  assert.equal(gainNode.connectedTo, audioContext.destination);
 });
