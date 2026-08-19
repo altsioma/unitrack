@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { createWebAudioPlaybackEngine } from '../src/index.js';
-import { createFakeAudioElement, createFakeAudioContext, asConstructor } from './helpers/domStubs.js';
+import { createFakeAudioElement, createFakeAudioContext, asConstructor, flush } from './helpers/domStubs.js';
+import { createFakeFetch, createFakeResponse, createFakeObjectUrlRegistry, withStubbedGlobals } from './helpers/fetchStubs.js';
 
 /**
  * @param {any} [audio]
@@ -48,9 +49,9 @@ test('canPlay returns false for a non-url kind — this engine only supports kin
   assert.equal(await engine.canPlay({ kind: 'buffer', buffer: new ArrayBuffer(0), mime: 'audio/mpeg' }), false);
 });
 
-test('exposes core-owned, non-gapless, no-background-playback capabilities', () => {
+test('exposes non-lookahead, non-gapless, no-background-playback capabilities', () => {
   const { engine } = makeEngine();
-  assert.deepEqual(engine.capabilities, { gapless: false, backgroundPlayback: false, queueAuthority: 'core' });
+  assert.deepEqual(engine.capabilities, { gapless: false, backgroundPlayback: false, lookaheadPlayback: false });
 });
 
 test('initialize resolves without throwing', async () => {
@@ -75,6 +76,12 @@ test('load sets the audio src and resolves once canplay fires', async () => {
   const audio = createFakeAudioElement();
   const { engine } = makeEngine(audio);
   const loadPromise = engine.load({ kind: 'url', url: 'file:///song.flac', mime: 'audio/flac' });
+  // A header-less ResolvedSource still goes through acquireWebMediaUrl()'s
+  // passthrough branch, which is itself async — audio.src is no longer
+  // assigned synchronously with the call to load(), so this waits for that
+  // microtask to settle before asserting and before the element can
+  // meaningfully receive a 'canplay' event.
+  await flush();
   assert.equal(audio.src, 'file:///song.flac');
   audio._simulateCanPlay(120);
   await loadPromise;
@@ -84,6 +91,7 @@ test('load rejects with a mapped error message when the element errors', async (
   const audio = createFakeAudioElement();
   const { engine } = makeEngine(audio);
   const loadPromise = engine.load({ kind: 'url', url: 'file:///broken.mp3', mime: 'audio/mpeg' });
+  await flush();
   audio._simulateError(4);
   await assert.rejects(
     () => loadPromise,
@@ -93,6 +101,60 @@ test('load rejects with a mapped error message when the element errors', async (
       return true;
     }
   );
+});
+
+test('load() with a header-bearing ResolvedSource fetches via acquireWebMediaUrl() and assigns the resulting blob: URL to audio.src', async () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  /** @type {any} */
+  let capturedInit;
+  const urlRegistry = createFakeObjectUrlRegistry();
+
+  await withStubbedGlobals({
+    fetchImpl: createFakeFetch({ response: createFakeResponse(), capture: (url, init) => { capturedInit = init; } }),
+    urlRegistry,
+  }, async () => {
+    const loadPromise = engine.load({
+      kind: 'url', url: 'https://example.com/a.flac', mime: 'audio/flac', headers: { Authorization: 'Bearer secret' },
+    });
+    await flush();
+    assert.deepEqual(capturedInit.headers, { Authorization: 'Bearer secret' });
+    assert.equal(audio.src, 'blob:fake-1', 'the object URL from the fetched blob is assigned, not the raw remote URL');
+    audio._simulateCanPlay(90);
+    await loadPromise;
+  });
+});
+
+test('a lease acquired for a header-bearing load() is released on the next load(), on stop(), and on dispose()', async () => {
+  const audio = createFakeAudioElement();
+  const { engine } = makeEngine(audio);
+  const urlRegistry = createFakeObjectUrlRegistry();
+
+  await withStubbedGlobals({
+    fetchImpl: createFakeFetch({ response: createFakeResponse() }),
+    urlRegistry,
+  }, async () => {
+    const loadPromise = engine.load({
+      kind: 'url', url: 'https://example.com/a.flac', mime: 'audio/flac', headers: { 'X-Test': '1' },
+    });
+    await flush();
+    audio._simulateCanPlay(90);
+    await loadPromise;
+    assert.deepEqual(urlRegistry.revokedUrls, []);
+
+    await engine.stop();
+    assert.deepEqual(urlRegistry.revokedUrls, ['blob:fake-1'], 'stop() releases the lease backing the loaded track');
+
+    const loadPromise2 = engine.load({
+      kind: 'url', url: 'https://example.com/b.flac', mime: 'audio/flac', headers: { 'X-Test': '1' },
+    });
+    await flush();
+    audio._simulateCanPlay(90);
+    await loadPromise2;
+
+    await engine.dispose();
+    assert.deepEqual(urlRegistry.revokedUrls, ['blob:fake-1', 'blob:fake-2'], 'dispose() releases whatever lease was still held');
+  });
 });
 
 test('play calls through to the audio element', async () => {
@@ -187,6 +249,7 @@ test('a media error during load() does not also fire the persistent error handle
   const errors = [];
   engine.on('error', (err) => errors.push(err));
   const loadPromise = engine.load({ kind: 'url', url: 'file:///broken.mp3', mime: 'audio/mpeg' });
+  await flush();
   audio._simulateError(4);
   await assert.rejects(() => loadPromise);
   assert.equal(errors.length, 0);
@@ -206,6 +269,7 @@ test('load() does not leak canplay/error listeners across repeated calls', async
   const { engine } = makeEngine(audio);
   for (let i = 0; i < 5; i += 1) {
     const loadPromise = engine.load({ kind: 'url', url: `file:///track-${i}.mp3`, mime: 'audio/mpeg' });
+    await flush();
     audio._simulateCanPlay(100);
     await loadPromise;
   }
@@ -295,11 +359,12 @@ test('off() removes an error listener', () => {
   assert.equal(errors.length, 1);
 });
 
-test('off() is a no-op for a handler that was never registered, or for trackChanged/transportCommand (never attached by this engine)', () => {
+test('off() is a no-op for a handler that was never registered, or for playbackStarted/playbackExhausted/transportCommand (never attached by this engine)', () => {
   const audio = createFakeAudioElement();
   const { engine } = makeEngine(audio);
   assert.doesNotThrow(() => engine.off('progress', () => {}));
-  assert.doesNotThrow(() => engine.off('trackChanged', () => {}));
+  assert.doesNotThrow(() => engine.off('playbackStarted', () => {}));
+  assert.doesNotThrow(() => engine.off('playbackExhausted', () => {}));
   assert.doesNotThrow(() => engine.off('transportCommand', () => {}));
 });
 

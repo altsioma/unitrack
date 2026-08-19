@@ -7,7 +7,12 @@
     "node": ">=22"
   },
   "main": "src/index.js",
-  "exports": "./src/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
     "typecheck": "tsc -p tsconfig.json",

@@ -14,7 +14,7 @@ test('the public entry point exports a working CorePlayer', async () => {
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.add(makeTrack('t1', [{ pluginId: 'local-fs', token: { pluginId: 'local-fs', token: 'l1' }, kind: 'local' }]));
+  await core.enqueue(makeTrack('t1', [{ pluginId: 'local-fs', token: { pluginId: 'local-fs', token: 'l1' }, kind: 'local' }]));
 
   await core.initializePlugins({});
   await core.play();

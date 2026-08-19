@@ -5,7 +5,7 @@
 // contractVersion against this at registration time (see
 // PluginRegistry.js) — an exact match is required; see the v0.3.0 design
 // spec's Implementation Decision 4 for why this isn't a semver range yet.
-export const CONTRACT_VERSION = '0.3.0';
+export const CONTRACT_VERSION = '0.4.0';
 
 // The closed list of capability keys each plugin category is allowed to
 // declare. PluginRegistry.registerX() rejects a plugin whose capabilities
@@ -13,7 +13,7 @@ export const CONTRACT_VERSION = '0.3.0';
 // contract-version-mismatched capability at registration instead of it
 // silently being ignored everywhere that reads `capabilities.something`.
 export const SOURCE_PROVIDER_CAPABILITY_KEYS = ['offline', 'requiresRevalidation'];
-export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback', 'queueAuthority', 'nowPlaying'];
+export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback', 'lookaheadPlayback', 'nowPlaying'];
 
 /**
  * An opaque, self-describing handle a SourceProvider hands out for one of
@@ -23,6 +23,14 @@ export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback',
  * `pluginId` (see SourceRef) so a bare SourceToken — e.g. one read back
  * from a persisted CoreState snapshot before any provider has
  * (re-)registered — is still self-describing on its own.
+ *
+ * `token` is provider-owned, not necessarily secret — a local filesystem
+ * provider may use a path as its token, where opacity is not secrecy. It is
+ * still excluded from standard error payloads, user-facing events, and
+ * default logging by every module that touches it (Resolver.js,
+ * CorePlayer.js, the conformance kit, and any host diagnostics) — only the
+ * provider that minted it may interpret it; everything else may persist and
+ * pass it through but must not parse or display its raw value.
  * @typedef {Object} SourceToken
  * @property {string} pluginId
  * @property {string} token
@@ -30,6 +38,12 @@ export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback',
  */
 
 /**
+ * `pluginId` and `token.pluginId` must be identical — a mismatch is invalid
+ * input, rejected before resolving, revalidating, or persisting the ref
+ * (see Resolver.js's resolveTrack()). The duplicated ID is useful when only
+ * a token survives (e.g. a persisted CoreState snapshot read back before
+ * any provider has registered); a genuine mismatch between the two is never
+ * reconciled heuristically.
  * @typedef {Object} SourceRef
  * @property {string} pluginId
  * @property {SourceToken} token
@@ -66,7 +80,7 @@ export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback',
  * @property {ReadableStream} [stream] - present when kind === 'stream'
  * @property {ArrayBuffer} [buffer] - present when kind === 'buffer'
  * @property {string} mime
- * @property {Record<string, string>} [headers] - request headers a consumer must send when fetching `url`; credentials belong here, never embedded in the URL itself
+ * @property {Record<string, string>} [headers] - request headers a consumer must send when fetching `url`; credentials belong here, never embedded in the URL itself. Like SourceToken.token, headers are excluded from standard error payloads, user-facing events, and default logging — a diagnostic may include pluginId, kind, displayPath, a redacted URL origin, and a reason code, but never the raw headers object.
  * @property {number} [bitrate]
  */
 
@@ -123,10 +137,26 @@ export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback',
  */
 
 /**
+ * A revisioned, short-lived lookahead snapshot Core sends to a
+ * lookaheadPlayback-capable engine via setPlaybackPlan(). It is disposable
+ * derived state, not a second queue — Core remains the sole owner of the
+ * canonical queue (see CorePlayer's queue commands). `revision` strictly
+ * increases every time Core installs, replaces, or invalidates a plan; an
+ * engine treats a later revision as superseding every earlier one — it
+ * cancels outstanding preparation where possible, releases resources for
+ * entries that never start, and never starts an uncommitted entry from an
+ * older plan. Events for an obsolete revision (see PlaybackEngine's
+ * 'playbackStarted'/'playbackExhausted') are ignored, not errors.
+ * @typedef {Object} PlaybackPlan
+ * @property {number} revision
+ * @property {PlaybackPlanEntry[]} entries
+ */
+
+/**
  * @typedef {Object} PlaybackEngineCapabilities
  * @property {boolean} gapless
  * @property {boolean} backgroundPlayback
- * @property {'core'|'engine'} queueAuthority
+ * @property {boolean} lookaheadPlayback - whether this engine implements setPlaybackPlan() and reports 'playbackStarted'/'playbackExhausted' instead of relying on Core's plain load()+play() path. Describes pre-buffering ability, not queue ownership — Core always owns the canonical queue regardless of this flag.
  * @property {boolean} [nowPlaying] - whether this engine implements setNowPlaying() and reports 'transportCommand'
  */
 
@@ -149,6 +179,18 @@ export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback',
  */
 
 /**
+ * Payload for both 'playbackStarted' and 'playbackExhausted' — see
+ * PlaybackPlan's doc comment for the revision-acceptance rule Core applies
+ * to both. 'playbackStarted' fires for every actual start, including the
+ * initial play and a gapless hand-off. 'playbackExhausted' fires after the
+ * last actually-started entry in the accepted plan ends without a prepared
+ * successor.
+ * @typedef {Object} PlaybackPlanEventPayload
+ * @property {string} queueItemId
+ * @property {number} planRevision
+ */
+
+/**
  * @typedef {Object} PlaybackEngine
  * @property {string} id
  * @property {string} contractVersion - must match CONTRACT_VERSION; checked by PluginRegistry.registerPlaybackEngine()
@@ -161,13 +203,13 @@ export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback',
  * @property {() => Promise<void>} stop
  * @property {(seconds: number) => Promise<void>} seek
  * @property {() => EngineState} getState
- * @property {(event: 'ended'|'error'|'progress'|'trackChanged'|'transportCommand', handler: (payload?: any) => void) => void} on
- * @property {(event: 'ended'|'error'|'progress'|'trackChanged'|'transportCommand', handler: (payload?: any) => void) => void} off
+ * @property {(event: 'ended'|'error'|'progress'|'playbackStarted'|'playbackExhausted'|'transportCommand', handler: (payload?: any) => void) => void} on
+ * @property {(event: 'ended'|'error'|'progress'|'playbackStarted'|'playbackExhausted'|'transportCommand', handler: (payload?: any) => void) => void} off
  * @property {(volume: number) => void} setVolume
  * @property {() => number} getVolume
  * @property {() => Promise<void>} dispose
  * @property {() => any} [getAudioGraphAnchor]
- * @property {(plan: PlaybackPlanEntry[]) => Promise<void>} [setPlaybackPlan] - required when capabilities.queueAuthority === 'engine'
+ * @property {(plan: PlaybackPlan) => Promise<void>} [setPlaybackPlan] - required when capabilities.lookaheadPlayback === true
  * @property {(info: NowPlayingInfo) => Promise<void>} [setNowPlaying] - required when capabilities.nowPlaying === true
  */
 
@@ -237,4 +279,31 @@ export const PLAYBACK_ENGINE_CAPABILITY_KEYS = ['gapless', 'backgroundPlayback',
  * @property {boolean} shuffle
  * @property {RepeatMode} repeatMode
  * @property {number} volume
+ */
+
+/**
+ * - 'providerMissing': no registered provider matches the SourceRef.
+ * - 'available': a provider requiring revalidation returned a valid token.
+ * - 'invalid': that provider returned `valid: false`.
+ * - 'unchecked': a registered provider does not require revalidation, or
+ *   its revalidation could not complete. Does not prove playback will fail.
+ * @typedef {'available' | 'providerMissing' | 'invalid' | 'unchecked'} SourceAvailabilityStatus
+ */
+
+/**
+ * @typedef {Object} SourceAvailabilityEntry
+ * @property {string} pluginId
+ * @property {string} [displayPath]
+ * @property {SourceAvailabilityStatus} status
+ * @property {string} [reason]
+ */
+
+/**
+ * Result of CorePlayer.inspectSourceAvailability() — a host-requested,
+ * non-mutating assessment. Never performs network/filesystem revalidation
+ * unprompted, never resolves or plays media, and never carries a raw
+ * SourceToken.token value.
+ * @typedef {Object} SourceAvailabilityResult
+ * @property {string} queueItemId
+ * @property {SourceAvailabilityEntry[]} sources
  */

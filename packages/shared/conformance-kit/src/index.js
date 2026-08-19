@@ -118,6 +118,21 @@ export async function assertSourceProviderConformance(provider, sampleRef, ctx) 
   const label = `SourceProvider "${provider?.id}"`;
   assertBasePluginShape(label, provider);
   assert.equal(typeof provider.kind, 'string', `${label}: kind must be a string`);
+
+  // Documents the pluginId/token.pluginId invariant (see types.js's
+  // SourceRef doc comment) for every provider author who runs this kit —
+  // a violated sampleRef fixture fails clearly here instead of surfacing
+  // as a confusing downstream error from canResolve()/resolve() below.
+  // This is a static shape check only: proving a genuinely-mismatched ref
+  // gets rejected *before* any provider method runs means driving it
+  // through Resolver.js's own resolveTrack() (the actual enforcement
+  // point) — this kit tests a provider in isolation, never through
+  // Resolver.js, so that behavioral assertion belongs to
+  // Resolver.test.js's own suite, not here.
+  assert.equal(
+    sampleRef.pluginId, sampleRef.token.pluginId,
+    `${label}: sampleRef.pluginId ("${sampleRef.pluginId}") must match sampleRef.token.pluginId ("${sampleRef.token.pluginId}")`
+  );
   assertCapabilityKeysAreClosed(label, provider.capabilities, SOURCE_PROVIDER_CAPABILITY_KEYS);
   assert.equal(typeof provider.capabilities.offline, 'boolean', `${label}: capabilities.offline must be a boolean`);
   assert.equal(typeof provider.capabilities.requiresRevalidation, 'boolean', `${label}: capabilities.requiresRevalidation must be a boolean`);
@@ -164,10 +179,7 @@ export async function assertPlaybackEngineConformance(engine, sampleResolvedSour
   assertCapabilityKeysAreClosed(label, engine.capabilities, PLAYBACK_ENGINE_CAPABILITY_KEYS);
   assert.equal(typeof engine.capabilities.gapless, 'boolean', `${label}: capabilities.gapless must be a boolean`);
   assert.equal(typeof engine.capabilities.backgroundPlayback, 'boolean', `${label}: capabilities.backgroundPlayback must be a boolean`);
-  assert.ok(
-    engine.capabilities.queueAuthority === 'core' || engine.capabilities.queueAuthority === 'engine',
-    `${label}: capabilities.queueAuthority must be 'core' | 'engine'`
-  );
+  assert.equal(typeof engine.capabilities.lookaheadPlayback, 'boolean', `${label}: capabilities.lookaheadPlayback must be a boolean`);
   if (engine.capabilities.nowPlaying !== undefined) {
     assert.equal(typeof engine.capabilities.nowPlaying, 'boolean', `${label}: capabilities.nowPlaying must be a boolean when present`);
   }
@@ -176,8 +188,8 @@ export async function assertPlaybackEngineConformance(engine, sampleResolvedSour
   for (const method of ['canPlay', 'load', 'play', 'pause', 'stop', 'seek', 'getState', 'on', 'off', 'setVolume', 'getVolume']) {
     assert.equal(typeof engineRecord[method], 'function', `${label}: ${method} must be a function`);
   }
-  if (engine.capabilities.queueAuthority === 'engine') {
-    assert.equal(typeof engine.setPlaybackPlan, 'function', `${label}: setPlaybackPlan must be a function when capabilities.queueAuthority === 'engine'`);
+  if (engine.capabilities.lookaheadPlayback) {
+    assert.equal(typeof engine.setPlaybackPlan, 'function', `${label}: setPlaybackPlan must be a function when capabilities.lookaheadPlayback === true`);
   }
   if (engine.capabilities.nowPlaying) {
     assert.equal(typeof engine.setNowPlaying, 'function', `${label}: setNowPlaying must be a function when capabilities.nowPlaying === true`);

@@ -53,6 +53,18 @@ test('assertSourceProviderConformance throws when resolve() returns a shape miss
   await assert.rejects(() => assertSourceProviderConformance(provider, sampleRef), /mime must be a string/);
 });
 
+test('assertSourceProviderConformance throws when sampleRef.pluginId does not match sampleRef.token.pluginId', async () => {
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => sampleResolved,
+  });
+  const mismatchedRef = { pluginId: 'local-fs', token: { pluginId: 'not-local-fs', token: 'l1' }, kind: 'local' };
+  await assert.rejects(
+    () => assertSourceProviderConformance(provider, mismatchedRef),
+    /sampleRef\.pluginId .* must match sampleRef\.token\.pluginId/
+  );
+});
+
 test('assertSourceProviderConformance throws when revalidate() omits .valid', async () => {
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -69,10 +81,10 @@ test('assertPlaybackEngineConformance passes for a well-behaved mock PlaybackEng
   await assert.doesNotReject(() => assertPlaybackEngineConformance(engine, sampleResolved));
 });
 
-test('assertPlaybackEngineConformance passes for a queueAuthority: "engine" mock (setPlaybackPlan required and present)', async () => {
+test('assertPlaybackEngineConformance passes for a lookaheadPlayback: true mock (setPlaybackPlan required and present)', async () => {
   const engine = createMockPlaybackEngine({
     id: 'audio-queue',
-    capabilities: { gapless: true, backgroundPlayback: false, queueAuthority: 'engine' },
+    capabilities: { gapless: true, backgroundPlayback: false, lookaheadPlayback: true },
   });
   await assert.doesNotReject(() => assertPlaybackEngineConformance(engine, sampleResolved));
 });
@@ -88,13 +100,13 @@ test('assertPlaybackEngineConformance throws for a contractVersion mismatch', as
 test('assertPlaybackEngineConformance throws for an unknown capability key', async () => {
   const engine = createMockPlaybackEngine({
     id: 'web-audio',
-    capabilities: { gapless: false, backgroundPlayback: false, queueAuthority: 'core', madeUp: true },
+    capabilities: { gapless: false, backgroundPlayback: false, lookaheadPlayback: false, madeUp: true },
   });
   await assert.rejects(() => assertPlaybackEngineConformance(engine, sampleResolved), /unknown key "madeUp"/);
 });
 
-test('assertPlaybackEngineConformance throws when queueAuthority: "engine" but setPlaybackPlan is missing', async () => {
-  const engine = createMockPlaybackEngine({ id: 'audio-queue', capabilities: { gapless: true, backgroundPlayback: false, queueAuthority: 'engine' } });
+test('assertPlaybackEngineConformance throws when lookaheadPlayback: true but setPlaybackPlan is missing', async () => {
+  const engine = createMockPlaybackEngine({ id: 'audio-queue', capabilities: { gapless: true, backgroundPlayback: false, lookaheadPlayback: true } });
   delete (/** @type {any} */ (engine)).setPlaybackPlan;
   await assert.rejects(() => assertPlaybackEngineConformance(engine, sampleResolved), /setPlaybackPlan must be a function/);
 });

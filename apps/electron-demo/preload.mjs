@@ -193,8 +193,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   /** @returns {void} */
   function renderQueue() {
-    const items = core.queue.getItems();
-    const currentIndex = core.queue.getCurrentIndex();
+    const state = core.getState();
+    const items = state.queue;
+    const currentIndex = state.currentQueueItem
+      ? items.findIndex((item) => item.queueItemId === state.currentQueueItem?.queueItemId)
+      : -1;
     queueListEl.replaceChildren();
     items.forEach((item, index) => {
       const li = document.createElement('li');
@@ -206,22 +209,21 @@ window.addEventListener('DOMContentLoaded', async () => {
       titleSpan.textContent = meta.artist ? `${meta.title} — ${meta.artist}` : meta.title;
       titleSpan.addEventListener('click', () => {
         log('ui', `queue row clicked: index ${index}`, { title: meta.title });
-        core.queue.setCurrentIndex(index);
-        core.play();
+        core.selectQueueItem(item.queueItemId).then(() => core.play());
       });
       li.appendChild(titleSpan);
 
       addButton(li, { label: '▲', disabled: index === 0, onClick: () => {
         log('ui', `move up: index ${index}`);
-        core.queue.reorder(item.queueItemId, index - 1);
+        core.reorderQueueItem(item.queueItemId, index - 1);
       } });
       addButton(li, { label: '▼', disabled: index === items.length - 1, onClick: () => {
         log('ui', `move down: index ${index}`);
-        core.queue.reorder(item.queueItemId, index + 1);
+        core.reorderQueueItem(item.queueItemId, index + 1);
       } });
       addButton(li, { label: '✕', onClick: () => {
         log('ui', `remove: index ${index}`, { title: meta.title });
-        core.queue.remove(item.queueItemId);
+        core.removeFromQueue(item.queueItemId);
       } });
 
       queueListEl.appendChild(li);
@@ -230,8 +232,9 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   /** @returns {void} */
   function updateShuffleRepeat() {
-    shuffleEl.textContent = `Shuffle: ${core.queue.isShuffleEnabled() ? 'on' : 'off'}`;
-    repeatEl.textContent = `Repeat: ${core.queue.getRepeatMode()}`;
+    const state = core.getState();
+    shuffleEl.textContent = `Shuffle: ${state.shuffle ? 'on' : 'off'}`;
+    repeatEl.textContent = `Repeat: ${state.repeatMode}`;
   }
 
   /**
@@ -283,11 +286,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     renderQueue();
   });
   core.on('queueChanged', () => {
+    const state = core.getState();
+    const currentIndex = state.currentQueueItem
+      ? state.queue.findIndex((item) => item.queueItemId === state.currentQueueItem?.queueItemId)
+      : -1;
     log('core', 'queueChanged', {
-      length: core.queue.getItems().length,
-      currentIndex: core.queue.getCurrentIndex(),
-      shuffle: core.queue.isShuffleEnabled(),
-      repeatMode: core.queue.getRepeatMode(),
+      length: state.queue.length,
+      currentIndex,
+      shuffle: state.shuffle,
+      repeatMode: state.repeatMode,
     });
     renderQueue();
     updateShuffleRepeat();
@@ -338,7 +345,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     const title = filePath.split(/[\\/]/).pop() ?? filePath;
-    core.queue.add({
+    await core.enqueue({
       id: filePath,
       metadata: { artist: '', album: '', title },
       sources: [{ pluginId: 'local-fs', token: { pluginId: 'local-fs', token: filePath }, kind: 'local' }],
@@ -375,13 +382,18 @@ window.addEventListener('DOMContentLoaded', async () => {
       // provider's filename-derived placeholder metadata rather than
       // failing the whole folder-open.
       if (!result?.ok) {
-        log('ui', `tags unavailable, keeping filename for ${sourceRef.token.token}`, result?.error);
+        // Never interpolate sourceRef.token.token (the raw, provider-owned
+        // token value) into a log line — pluginId + the already-known
+        // filename-derived title are enough to identify which track this
+        // was, without carrying a value this project treats as always
+        // redacted (see types.js's SourceToken doc comment).
+        log('ui', `tags unavailable, keeping filename for "${track.metadata.title}" (pluginId: ${sourceRef.pluginId})`, result?.error);
         return track;
       }
       return { ...track, metadata: { ...track.metadata, ...result.metadata } };
     });
     log('ui', `enrichment done for ${enrichedTracks.length} track(s), appending to queue`);
-    core.queue.add(enrichedTracks);
+    await core.enqueue(enrichedTracks);
     await autoPlayIfEnabled();
     log('ui', 'Open Folder complete');
   });
@@ -425,16 +437,16 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   shuffleEl.addEventListener('click', () => {
-    const next = !core.queue.isShuffleEnabled();
+    const next = !core.getState().shuffle;
     log('ui', `shuffle -> ${next ? 'on' : 'off'}`);
-    core.queue.setShuffle(next);
+    core.setShuffle(next);
   });
 
   repeatEl.addEventListener('click', () => {
-    const currentIndex = REPEAT_CYCLE.indexOf(core.queue.getRepeatMode());
+    const currentIndex = REPEAT_CYCLE.indexOf(core.getState().repeatMode);
     const nextMode = REPEAT_CYCLE[(currentIndex + 1) % REPEAT_CYCLE.length];
     log('ui', `repeat -> ${nextMode}`);
-    core.queue.setRepeatMode(nextMode);
+    core.setRepeatMode(nextMode);
   });
 
   // Best-effort cleanup (closes engine-web-audio's AudioContext) — fire and

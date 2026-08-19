@@ -1,0 +1,17 @@
+{
+  "name": "@unitrack/ts-consumer-fixture",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A genuine TypeScript (not JS+JSDoc) consumer of @unitrack/core's published .d.ts output — proves the imported types resolve and type-check from a real .ts file, not just from another package's .js+JSDoc (every other package in this repo is checked the JSDoc way). Produces no runtime output and is not itself published.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@unitrack/core": "^0.2.0",
+    "typescript": "^5.5.4"
+  }
+}

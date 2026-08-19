@@ -91,6 +91,47 @@ test('registerSourceProvider throws PluginContractError when capabilities has an
   });
 });
 
+test('registerSourceProvider throws PluginContractError when a required capability key is missing', () => {
+  const registry = new PluginRegistry();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ kind: 'url', url: 'x', mime: 'audio/flac' }),
+    capabilities: /** @type {any} */ ({ offline: true }), // missing requiresRevalidation
+  });
+  assert.throws(() => registry.registerSourceProvider(provider), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /missing required capability "requiresRevalidation"/);
+    return true;
+  });
+});
+
+test('registerSourceProvider throws PluginContractError when a capability key has the wrong type', () => {
+  const registry = new PluginRegistry();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ kind: 'url', url: 'x', mime: 'audio/flac' }),
+    capabilities: /** @type {any} */ ({ offline: 'yes', requiresRevalidation: false }),
+  });
+  assert.throws(() => registry.registerSourceProvider(provider), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /capability "offline" must be a boolean/);
+    return true;
+  });
+});
+
+test('registerSourceProvider throws PluginContractError when a required method is missing', () => {
+  const registry = new PluginRegistry();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: /** @type {any} */ (undefined),
+  });
+  assert.throws(() => registry.registerSourceProvider(provider), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /missing required method "resolve"/);
+    return true;
+  });
+});
+
 test('registerPlaybackEngine throws PluginContractError when contractVersion does not match', () => {
   const registry = new PluginRegistry();
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
@@ -106,11 +147,75 @@ test('registerPlaybackEngine throws PluginContractError when capabilities has an
   const registry = new PluginRegistry();
   const engine = createMockPlaybackEngine({
     id: 'web-audio',
-    capabilities: { gapless: false, backgroundPlayback: false, queueAuthority: 'core', madeUp: true },
+    capabilities: { gapless: false, backgroundPlayback: false, lookaheadPlayback: false, madeUp: true },
   });
   assert.throws(() => registry.registerPlaybackEngine(engine), (err) => {
     assert.ok(err instanceof PluginContractError);
     assert.match(err.message, /unknown capability "madeUp"/);
+    return true;
+  });
+});
+
+test('registerPlaybackEngine throws PluginContractError when a required capability key is missing', () => {
+  const registry = new PluginRegistry();
+  const engine = createMockPlaybackEngine({
+    id: 'web-audio',
+    capabilities: /** @type {any} */ ({ gapless: false, backgroundPlayback: false }), // missing lookaheadPlayback
+  });
+  assert.throws(() => registry.registerPlaybackEngine(engine), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /missing required capability "lookaheadPlayback"/);
+    return true;
+  });
+});
+
+test('registerPlaybackEngine throws PluginContractError when a capability key has the wrong type', () => {
+  const registry = new PluginRegistry();
+  const engine = createMockPlaybackEngine({
+    id: 'web-audio',
+    capabilities: /** @type {any} */ ({ gapless: 'no', backgroundPlayback: false, lookaheadPlayback: false }),
+  });
+  assert.throws(() => registry.registerPlaybackEngine(engine), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /capability "gapless" must be a boolean/);
+    return true;
+  });
+});
+
+test('registerPlaybackEngine throws PluginContractError when a required method is missing', () => {
+  const registry = new PluginRegistry();
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  delete (/** @type {any} */ (engine)).seek;
+  assert.throws(() => registry.registerPlaybackEngine(engine), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /missing required method "seek"/);
+    return true;
+  });
+});
+
+test('registerPlaybackEngine throws PluginContractError when lookaheadPlayback: true but setPlaybackPlan is missing', () => {
+  const registry = new PluginRegistry();
+  const engine = createMockPlaybackEngine({
+    id: 'audio-queue',
+    capabilities: { gapless: true, backgroundPlayback: false, lookaheadPlayback: true },
+  });
+  delete (/** @type {any} */ (engine)).setPlaybackPlan;
+  assert.throws(() => registry.registerPlaybackEngine(engine), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /lookaheadPlayback: true but does not implement setPlaybackPlan/);
+    return true;
+  });
+});
+
+test('registerPlaybackEngine throws PluginContractError when nowPlaying: true but setNowPlaying is missing', () => {
+  const registry = new PluginRegistry();
+  const engine = createMockPlaybackEngine({
+    id: 'web-audio',
+    capabilities: { gapless: false, backgroundPlayback: false, lookaheadPlayback: false, nowPlaying: true },
+  });
+  assert.throws(() => registry.registerPlaybackEngine(engine), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /nowPlaying: true but does not implement setNowPlaying/);
     return true;
   });
 });
@@ -131,6 +236,26 @@ test('registerPlaylistProvider throws PluginContractError when contractVersion d
   assert.throws(() => registry.registerPlaylistProvider(provider), (err) => {
     assert.ok(err instanceof PluginContractError);
     assert.match(err.message, /declares contractVersion "0\.2\.0"/);
+    return true;
+  });
+});
+
+test('registerMetadataProvider throws PluginContractError when the required search method is missing', () => {
+  const registry = new PluginRegistry();
+  const provider = /** @type {any} */ ({ id: 'musicbrainz', contractVersion: CONTRACT_VERSION });
+  assert.throws(() => registry.registerMetadataProvider(provider), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /missing required method "search"/);
+    return true;
+  });
+});
+
+test('registerPlaylistProvider throws PluginContractError when the required fetchPlaylist method is missing', () => {
+  const registry = new PluginRegistry();
+  const provider = /** @type {any} */ ({ id: 'local-playlists', contractVersion: CONTRACT_VERSION });
+  assert.throws(() => registry.registerPlaylistProvider(provider), (err) => {
+    assert.ok(err instanceof PluginContractError);
+    assert.match(err.message, /missing required method "fetchPlaylist"/);
     return true;
   });
 });

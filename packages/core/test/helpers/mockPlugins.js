@@ -39,13 +39,13 @@ export function createMockSourceProvider({
  *   id?: string,
  *   canPlayImpl?: (resolved: import('../../src/types.js').ResolvedSource) => boolean,
  *   capabilities?: import('../../src/types.js').PlaybackEngineCapabilities,
- *   planImpl?: (plan: import('../../src/types.js').PlaybackPlanEntry[]) => Promise<void>,
+ *   planImpl?: (plan: import('../../src/types.js').PlaybackPlan) => Promise<void>,
  * }} [config]
- * @returns {import('../../src/types.js').PlaybackEngine & { loaded: any, playCalls: number, pauseCalls: number, stopCalls: number, seekCalls: number[], volume: number, volumeCalls: number[], plan: import('../../src/types.js').PlaybackPlanEntry[] | null, _simulate: (event: string, payload?: any) => void, _listenerCount: (event: string) => number }}
+ * @returns {import('../../src/types.js').PlaybackEngine & { loaded: any, playCalls: number, pauseCalls: number, stopCalls: number, seekCalls: number[], volume: number, volumeCalls: number[], plan: import('../../src/types.js').PlaybackPlanEntry[] | null, planRevision: number | null, _simulate: (event: string, payload?: any) => void, _listenerCount: (event: string) => number }}
  */
 export function createMockPlaybackEngine({
   id, canPlayImpl,
-  capabilities = { gapless: false, backgroundPlayback: false, queueAuthority: 'core' },
+  capabilities = { gapless: false, backgroundPlayback: false, lookaheadPlayback: false },
   planImpl,
 } = {}) {
   /** @type {Map<string, Set<Function>>} */
@@ -67,6 +67,7 @@ export function createMockPlaybackEngine({
     volume: 1,
     volumeCalls: [],
     plan: null,
+    planRevision: null,
     async load(resolved) { this.loaded = resolved; },
     async play() { this.playCalls += 1; },
     async pause() { this.pauseCalls += 1; },
@@ -89,9 +90,10 @@ export function createMockPlaybackEngine({
       return listeners.get(event)?.size ?? 0;
     },
   };
-  if (capabilities.queueAuthority === 'engine') {
+  if (capabilities.lookaheadPlayback) {
     engine.setPlaybackPlan = async (plan) => {
-      engine.plan = plan;
+      engine.plan = plan.entries;
+      engine.planRevision = plan.revision;
       if (planImpl) await planImpl(plan);
     };
   }

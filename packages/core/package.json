@@ -8,8 +8,14 @@
   },
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js",
-    "./types": "./src/types.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./src/types.js"
+    }
   },
   "scripts": {
     "test": "node --test test/*.test.js",

@@ -7,11 +7,19 @@
     "node": ">=18"
   },
   "main": "src/index.js",
-  "exports": "./src/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
     "typecheck": "tsc -p tsconfig.json",
     "build:types": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@unitrack/media-delivery-web": "^0.1.0"
   },
   "devDependencies": {
     "@unitrack/conformance-kit": "^0.1.0",

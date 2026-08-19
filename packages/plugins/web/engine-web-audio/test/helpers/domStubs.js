@@ -124,3 +124,16 @@ export function asConstructor(instance) {
     return instance;
   };
 }
+
+/**
+ * Resolves once every already-queued microtask has run — needed because
+ * load() now awaits acquireWebMediaUrl() (from @unitrack/media-delivery-web)
+ * before assigning audio.src, so that assignment is no longer synchronous
+ * with the call to load(). Same `setImmediate` flush
+ * @unitrack/engine-audio-queue's own test helpers and @unitrack/core's own
+ * CorePlayer.test.js use for the same reason.
+ * @returns {Promise<void>}
+ */
+export function flush() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
