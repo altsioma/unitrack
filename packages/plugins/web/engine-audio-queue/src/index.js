@@ -16,6 +16,7 @@ function mapMediaError(error) {
 }
 
 import { CONTRACT_VERSION } from '@unitrack/core/types';
+import { acquireWebMediaUrl } from '@unitrack/media-delivery-web';
 
 /**
  * Waits for a freshly-load()ed element to become playable — the same
@@ -40,11 +41,13 @@ function waitUntilPlayable(el) {
  *   loadedQueueItemId: string | undefined,
  *   ready: boolean,
  *   loading: boolean,
+ *   loadController: AbortController | undefined,
+ *   releaseLease: (() => void) | undefined,
  * }} Slot
  */
 
 /**
- * A chained-HTMLAudioElement queueAuthority: 'engine' playback engine: it
+ * A chained-HTMLAudioElement lookaheadPlayback playback engine: it
  * owns two <audio> elements ("slots") instead of one. Whichever slot is
  * currently audible is the "active" slot; the other is kept pre-loaded
  * with whatever setPlaybackPlan() says comes next, so that when the
@@ -93,7 +96,10 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
   function makeSlot(id) {
     const el = new AudioConstructor();
     /** @type {Slot} */
-    const slot = { id, el, loadedQueueItemId: undefined, ready: false, loading: false };
+    const slot = {
+      id, el, loadedQueueItemId: undefined, ready: false, loading: false,
+      loadController: undefined, releaseLease: undefined,
+    };
     el.addEventListener('timeupdate', () => {
       if (slot !== activeSlot) return;
       fire('progress', { position: el.currentTime, duration: el.duration || 0 });
@@ -129,6 +135,12 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
   let buffering = false;
   /** @type {import('@unitrack/core/types').PlaybackPlanEntry[]} */
   let plan = [];
+  // The revision of the most recently accepted PlaybackPlan. A fresh
+  // Core-issued revision is always > 0 (Core increments its own counter
+  // before ever calling setPlaybackPlan), so 0 here means "no plan
+  // accepted yet" and naturally fails the staleness check on the first
+  // real call.
+  let currentRevision = 0;
 
   /**
    * @param {Slot} slot
@@ -139,12 +151,24 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
     if (entry.resolved.kind !== 'url' || !entry.resolved.url) {
       throw new Error(`audio-queue engine only supports kind: 'url' sources, got "${entry.resolved.kind}"`);
     }
+    // Supersede whatever this slot was previously loading/holding: abort
+    // its own acquireWebMediaUrl() fetch (a no-op if the entry had no
+    // headers, since then there was never a fetch) and release its lease,
+    // if it had already resolved one.
+    slot.loadController?.abort();
+    slot.releaseLease?.();
+    slot.releaseLease = undefined;
+
     slot.ready = false;
     slot.loadedQueueItemId = entry.queueItemId;
     slot.loading = true;
-    slot.el.src = entry.resolved.url;
-    slot.el.load();
+    const loadController = new AbortController();
+    slot.loadController = loadController;
     try {
+      const lease = await acquireWebMediaUrl(entry.resolved, { signal: loadController.signal });
+      slot.releaseLease = lease.release;
+      slot.el.src = lease.url;
+      slot.el.load();
       await waitUntilPlayable(slot.el);
       slot.ready = true;
     } finally {
@@ -165,6 +189,9 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
   async function prepareNextSlot() {
     const next = plan[1];
     if (!next) {
+      inactiveSlot.loadController?.abort();
+      inactiveSlot.releaseLease?.();
+      inactiveSlot.releaseLease = undefined;
       inactiveSlot.loadedQueueItemId = undefined;
       inactiveSlot.ready = false;
       return;
@@ -179,13 +206,15 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
 
   /** @returns {void} */
   function handleActiveSlotEnded() {
+    const finishedQueueItemId = activeSlot.loadedQueueItemId;
     const next = plan[1];
     if (!next || inactiveSlot.loadedQueueItemId !== next.queueItemId || !inactiveSlot.ready) {
       // Nothing pre-buffered and ready to hand off to — this is a
       // genuine end of what this engine currently knows about. Core's
-      // #advanceOnEnded decides what happens next (including whether the
-      // plan simply needs refreshing because the real queue has more).
-      fire('ended');
+      // #advanceOnEnded (triggered by 'playbackExhausted') decides what
+      // happens next (including whether the plan simply needs refreshing
+      // because the real queue has more).
+      fire('playbackExhausted', { queueItemId: finishedQueueItemId, planRevision: currentRevision });
       return;
     }
     const finishedSlot = activeSlot;
@@ -196,9 +225,13 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
     activeSlot.el.play().catch((/** @type {unknown} */ err) => {
       fire('error', err instanceof Error ? err : new Error(String(err)));
     });
-    fire('trackChanged', { queueItemId: newQueueItemId });
-    // Reset the now-inactive (previously active) slot and try to
-    // pre-buffer whatever the plan now says is next, into it.
+    fire('playbackStarted', { queueItemId: newQueueItemId, planRevision: currentRevision });
+    // Reset the now-inactive (previously active) slot — including
+    // releasing the lease backing whatever it just finished playing — and
+    // try to pre-buffer whatever the plan now says is next, into it.
+    inactiveSlot.loadController?.abort();
+    inactiveSlot.releaseLease?.();
+    inactiveSlot.releaseLease = undefined;
     inactiveSlot.loadedQueueItemId = undefined;
     inactiveSlot.ready = false;
     inactiveSlot.el.pause();
@@ -209,10 +242,10 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
     id: 'audio-queue',
     contractVersion: CONTRACT_VERSION,
 
-    // This is a queueAuthority: 'engine' engine — it owns advancing
+    // This is a lookaheadPlayback engine — it pre-buffers and advances
     // between the tracks in its own plan. See the module doc comment
     // above for the gapless/backgroundPlayback rationale.
-    capabilities: { gapless: true, backgroundPlayback: false, queueAuthority: 'engine' },
+    capabilities: { gapless: true, backgroundPlayback: false, lookaheadPlayback: true },
 
     /**
      * @param {import('@unitrack/core/types').PluginContext} ctx
@@ -223,6 +256,9 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
     /** @returns {Promise<void>} */
     async dispose() {
       for (const slot of [slotA, slotB]) {
+        slot.loadController?.abort();
+        slot.releaseLease?.();
+        slot.releaseLease = undefined;
         slot.el.pause();
       }
       plan = [];
@@ -241,8 +277,8 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
     /**
      * Loads a single ResolvedSource directly into the active slot,
      * bypassing plan tracking. Present for PlaybackEngine contract
-     * completeness — Core never calls this on a queueAuthority: 'engine'
-     * engine (it calls setPlaybackPlan() instead; see
+     * completeness — Core never calls this on a lookaheadPlayback engine
+     * (it calls setPlaybackPlan() instead; see
      * CorePlayer#loadAndPlayCurrent), so this only matters for a host or
      * test driving the engine standalone.
      * @param {import('@unitrack/core/types').ResolvedSource} resolved
@@ -257,13 +293,19 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
      * Loads the current entry into the active slot (if it is not already
      * there and ready) and pre-buffers the next entry, if any, into the
      * inactive slot. Does not itself start playback — Core always follows
-     * this with play(), same as the load()+play() pair a
-     * queueAuthority: 'core' engine gets.
-     * @param {import('@unitrack/core/types').PlaybackPlanEntry[]} newPlan
+     * this with play(), same as the load()+play() pair a non-lookahead
+     * engine gets. A revision that is not strictly greater than the one
+     * most recently accepted is treated as stale and ignored outright —
+     * defensive groundwork against a future multi-writer scenario; under
+     * Core's own single-writer, strictly-increasing counter this should
+     * never actually trigger.
+     * @param {import('@unitrack/core/types').PlaybackPlan} newPlan
      * @returns {Promise<void>}
      */
     async setPlaybackPlan(newPlan) {
-      plan = newPlan;
+      if (newPlan.revision <= currentRevision) return;
+      currentRevision = newPlan.revision;
+      plan = newPlan.entries;
       const first = plan[0];
       if (!first) return;
       if (activeSlot.loadedQueueItemId !== first.queueItemId || !activeSlot.ready) {
@@ -284,6 +326,22 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
 
     /** @returns {Promise<void>} */
     async stop() {
+      // Core always calls setPlaybackPlan() again before the next play()
+      // after a stop() (see CorePlayer#stop clearing #loadedQueueItemId),
+      // so it's safe to release both slots' leases here — nothing will
+      // try to keep playing a now-revoked object URL. ready/loadedQueueItemId
+      // are reset alongside the release so a future setPlaybackPlan() call
+      // that happens to name the same entry doesn't skip reloading it
+      // (setPlaybackPlan's activeSlot.ready check would otherwise still see
+      // "ready" against an <audio> element now pointed at a revoked blob:
+      // URL).
+      for (const slot of [activeSlot, inactiveSlot]) {
+        slot.loadController?.abort();
+        slot.releaseLease?.();
+        slot.releaseLease = undefined;
+        slot.loadedQueueItemId = undefined;
+        slot.ready = false;
+      }
       activeSlot.el.pause();
       activeSlot.el.currentTime = 0;
     },
@@ -306,7 +364,7 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
     },
 
     /**
-     * @param {'ended'|'error'|'progress'|'trackChanged'|'transportCommand'} event
+     * @param {'ended'|'error'|'progress'|'playbackStarted'|'playbackExhausted'|'transportCommand'} event
      * @param {(payload?: any) => void} handler
      * @returns {void}
      */
@@ -316,7 +374,7 @@ export function createAudioQueuePlaybackEngine({ AudioConstructor = globalThis.A
     },
 
     /**
-     * @param {'ended'|'error'|'progress'|'trackChanged'|'transportCommand'} event
+     * @param {'ended'|'error'|'progress'|'playbackStarted'|'playbackExhausted'|'transportCommand'} event
      * @param {(payload?: any) => void} handler
      * @returns {void}
      */

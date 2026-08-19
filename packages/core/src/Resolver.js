@@ -31,6 +31,15 @@ export async function resolveTrack(track, policy, providers) {
     );
 
     for (const ref of matchingRefs) {
+      // A SourceRef whose top-level pluginId disagrees with its own
+      // token's pluginId is malformed input — could indicate a token that
+      // was reassembled around the wrong ref, or a provider bug. Rejected
+      // up front, before any provider method runs, exactly like the
+      // "no provider registered"/"provider cannot resolve" branches below.
+      if (ref.pluginId !== ref.token.pluginId) {
+        failedSources.push({ pluginId: ref.pluginId, token: ref.token, reason: 'SourceRef.pluginId does not match token.pluginId' });
+        continue;
+      }
       const provider = providers.find((p) => p.id === ref.pluginId);
       if (!provider) {
         failedSources.push({ pluginId: ref.pluginId, token: ref.token, reason: 'no provider registered for pluginId' });

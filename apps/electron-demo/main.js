@@ -164,6 +164,26 @@ app.on('child-process-gone', (event, details) => {
 });
 
 /**
+ * A JSON.stringify replacer for this file's IPC request-argument logging:
+ * blanks exactly the fields the project treats as always-redacted —
+ * SourceToken.token (the opaque, provider-owned value; see types.js's
+ * SourceToken doc comment — not necessarily secret for every provider, but
+ * never assumed safe to log) and ResolvedSource.headers (request headers,
+ * which may carry credentials) — wherever they appear in an argument list,
+ * however deeply nested. Generic on purpose: handleWithLogging wraps every
+ * IPC channel, present and future, not just the ones known today to take a
+ * SourceRef.
+ * @param {string} key
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function redactingReplacer(key, value) {
+  if (key === 'token' && typeof value === 'string') return '[redacted]';
+  if (key === 'headers' && value && typeof value === 'object') return '[redacted]';
+  return value;
+}
+
+/**
  * Wraps an IPC handler so every call logs its arguments, its outcome, and
  * how long it took, without each handler repeating that boilerplate.
  * @param {string} channel
@@ -173,7 +193,7 @@ app.on('child-process-gone', (event, details) => {
 function handleWithLogging(channel, handler) {
   ipcMain.handle(channel, async (event, ...args) => {
     const calledAt = Date.now();
-    log('ipc', `${channel} <- ${JSON.stringify(args)}`);
+    log('ipc', `${channel} <- ${JSON.stringify(args, redactingReplacer)}`);
     try {
       const result = await handler(event, ...args);
       log('ipc', `${channel} -> ok in ${Date.now() - calledAt}ms`, result);

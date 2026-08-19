@@ -1,0 +1,25 @@
+{
+  "name": "@unitrack/media-delivery-web",
+  "version": "0.1.0",
+  "description": "Internal helper for the web PlaybackEngine plugins: turns a ResolvedSource (optionally carrying request headers) into a plain URL an <audio> element can play, fetching-and-blobbing when headers are required. No plugin identity, not part of @unitrack/core's public API — consumed only by the web engine packages.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@unitrack/core": "^0.2.0",
+    "typescript": "^5.5.4"
+  }
+}

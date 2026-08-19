@@ -165,6 +165,39 @@ test('gives up after a revalidated token also fails to resolve', async () => {
   );
 });
 
+test('rejects a SourceRef whose pluginId does not match its own token.pluginId, without ever calling the matching provider', async () => {
+  let canResolveCalls = 0;
+  let resolveCalls = 0;
+  let revalidateCalls = 0;
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    capabilities: { offline: true, requiresRevalidation: true },
+    canResolveImpl: () => { canResolveCalls += 1; return true; },
+    resolveImpl: async () => { resolveCalls += 1; return { kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }; },
+    revalidateImpl: async (token) => { revalidateCalls += 1; return { valid: true, token }; },
+  });
+  const track = makeTrack('t1', [
+    { pluginId: 'local-fs', token: { pluginId: 'not-local-fs', token: 'l1' }, kind: 'local' },
+  ]);
+  await assert.rejects(
+    () => resolveTrack(track, [{ kind: 'local' }], [provider]),
+    (err) => {
+      assert.ok(err instanceof TrackResolutionError);
+      assert.deepEqual(err.failedSources, [
+        {
+          pluginId: 'local-fs',
+          token: { pluginId: 'not-local-fs', token: 'l1' },
+          reason: 'SourceRef.pluginId does not match token.pluginId',
+        },
+      ]);
+      return true;
+    }
+  );
+  assert.equal(canResolveCalls, 0, 'canResolve must never be called for a mismatched ref');
+  assert.equal(resolveCalls, 0, 'resolve must never be called for a mismatched ref');
+  assert.equal(revalidateCalls, 0, 'revalidate must never be called for a mismatched ref');
+});
+
 test('gives up without retrying resolve() when revalidate() itself reports invalid', async () => {
   const provider = createMockSourceProvider({
     id: 'subsonic', kind: 'streaming',

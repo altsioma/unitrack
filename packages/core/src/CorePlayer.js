@@ -4,7 +4,7 @@ import { PluginRegistry } from './PluginRegistry.js';
 import { resolveTrack, TrackResolutionError } from './Resolver.js';
 
 // How many upcoming queue items (including the current one) get resolved
-// and handed to a queueAuthority: 'engine' engine via setPlaybackPlan().
+// and handed to a lookaheadPlayback engine via setPlaybackPlan().
 const DEFAULT_LOOKAHEAD_WINDOW = 3;
 
 /**
@@ -24,8 +24,18 @@ export class PluginsNotInitializedError extends Error {
 export class CorePlayer extends EventEmitter {
   /** @type {PluginRegistry} */
   #registry = new PluginRegistry();
-  /** @type {QueueManager} */
-  queue = new QueueManager();
+  /**
+   * Private to CorePlayer — QueueManager is never exposed on the public
+   * surface. getState().queue remains a snapshot (QueueManager.getItems()
+   * already returns a fresh array copy); the seven public queue commands
+   * below (enqueue, removeFromQueue, reorderQueueItem, clearQueue,
+   * selectQueueItem, setShuffle, setRepeatMode) are the only public way to
+   * mutate it. A playback engine may optimise a plan built from this queue
+   * (see setPlaybackPlan / PlaybackPlan) but never owns or mutates the
+   * queue itself.
+   * @type {QueueManager}
+   */
+  #queue = new QueueManager();
   /** @type {import('./types.js').SourcePolicyRule[]} */
   #policy = [];
   /** @type {number} */
@@ -54,13 +64,23 @@ export class CorePlayer extends EventEmitter {
   #loadedQueueItemId;
   /** @type {boolean} */
   #initialized = false;
+  /**
+   * Strictly increasing whenever Core installs, replaces, or invalidates a
+   * PlaybackPlan for the active engine (see #resolveLookaheadPlan and its
+   * two call sites). A lookaheadPlayback engine's 'playbackStarted'/
+   * 'playbackExhausted' events are accepted only when their planRevision
+   * matches this counter's current value at the time they're handled —
+   * see #handlePlaybackStarted/#handlePlaybackExhausted.
+   * @type {number}
+   */
+  #planRevision = 0;
 
   constructor() {
     super();
-    this.queue.on('changed', () => {
+    this.#queue.on('changed', () => {
       this.emit('queueChanged');
       const loadedId = this.#loadedQueueItemId;
-      if (loadedId && !this.queue.getItems().some((i) => i.queueItemId === loadedId)) {
+      if (loadedId && !this.#queue.getItems().some((i) => i.queueItemId === loadedId)) {
         this.#enqueue(() => this.#reconcileMissingCurrentItem(loadedId));
       } else if (loadedId) {
         this.#enqueue(() => this.#refreshLookaheadPlan());
@@ -161,26 +181,136 @@ export class CorePlayer extends EventEmitter {
   getState() {
     return {
       status: this.#status,
-      currentQueueItem: this.queue.getCurrentItem(),
+      currentQueueItem: this.#queue.getCurrentItem(),
       position: this.#position,
       duration: this.#duration,
-      queue: this.queue.getItems(),
+      queue: this.#queue.getItems(),
       policy: this.#policy,
-      shuffle: this.queue.isShuffleEnabled(),
-      repeatMode: this.queue.getRepeatMode(),
+      shuffle: this.#queue.isShuffleEnabled(),
+      repeatMode: this.#queue.getRepeatMode(),
       volume: this.#volume,
     };
   }
 
   /**
-   * Checks, without attempting resolution or playback, whether at least
-   * one of a queue item's sources has a currently-registered provider.
-   * Emits 'sourceUnavailable' — { queueItemId, trackId, tokens } — and
-   * returns false when none do (e.g. a queue item restored from a
-   * snapshot whose provider was never re-registered this launch); returns
-   * true otherwise (a registered provider existing doesn't guarantee
-   * resolution will actually succeed — that's still only found out by
-   * attempting it, same as before).
+   * Appends one or more tracks to the end of the canonical queue. The only
+   * public way to add to the queue — direct queue mutation is not exposed.
+   * Serialized on Core's own operation chain, same as play()/pause()/etc.
+   * @param {import('./types.js').LogicalTrack | import('./types.js').LogicalTrack[]} trackOrTracks
+   * @returns {Promise<import('./types.js').QueueItem[]>}
+   */
+  async enqueue(trackOrTracks) {
+    return this.#enqueue(() => this.#addToQueue(trackOrTracks));
+  }
+
+  /**
+   * @param {import('./types.js').LogicalTrack | import('./types.js').LogicalTrack[]} trackOrTracks
+   * @returns {Promise<import('./types.js').QueueItem[]>}
+   */
+  async #addToQueue(trackOrTracks) {
+    return this.#queue.add(trackOrTracks);
+  }
+
+  /**
+   * Removes a single queue item. Queue mutations never interrupt the
+   * currently sounding item; they replace only not-yet-started plan
+   * entries (see #refreshLookaheadPlan, triggered by the queue's own
+   * 'changed' event wired in the constructor).
+   * @param {string} queueItemId
+   * @returns {Promise<boolean>}
+   */
+  async removeFromQueue(queueItemId) {
+    return this.#enqueue(() => this.#removeFromQueue(queueItemId));
+  }
+
+  /** @param {string} queueItemId @returns {Promise<boolean>} */
+  async #removeFromQueue(queueItemId) {
+    return this.#queue.remove(queueItemId);
+  }
+
+  /**
+   * @param {string} queueItemId
+   * @param {number} index
+   * @returns {Promise<boolean>}
+   */
+  async reorderQueueItem(queueItemId, index) {
+    return this.#enqueue(() => this.#reorderQueueItem(queueItemId, index));
+  }
+
+  /** @param {string} queueItemId @param {number} index @returns {Promise<boolean>} */
+  async #reorderQueueItem(queueItemId, index) {
+    return this.#queue.reorder(queueItemId, index);
+  }
+
+  /** @returns {Promise<void>} */
+  async clearQueue() {
+    return this.#enqueue(() => this.#clearQueue());
+  }
+
+  /** @returns {Promise<void>} */
+  async #clearQueue() {
+    this.#queue.clear();
+  }
+
+  /**
+   * Changes only which queue item is selected — it does not start
+   * playback. play() already detects a changed selection
+   * (currentItem?.queueItemId !== #loadedQueueItemId) and loads it, same
+   * as it always has. Returns false without mutating anything when
+   * queueItemId isn't found in the current queue.
+   * @param {string} queueItemId
+   * @returns {Promise<boolean>}
+   */
+  async selectQueueItem(queueItemId) {
+    return this.#enqueue(() => this.#selectQueueItem(queueItemId));
+  }
+
+  /** @param {string} queueItemId @returns {Promise<boolean>} */
+  async #selectQueueItem(queueItemId) {
+    const idx = this.#queue.getItems().findIndex((i) => i.queueItemId === queueItemId);
+    if (idx === -1) return false;
+    this.#queue.setCurrentIndex(idx);
+    return true;
+  }
+
+  /** @param {boolean} enabled @returns {Promise<void>} */
+  async setShuffle(enabled) {
+    return this.#enqueue(() => this.#setShuffle(enabled));
+  }
+
+  /** @param {boolean} enabled @returns {Promise<void>} */
+  async #setShuffle(enabled) {
+    this.#queue.setShuffle(enabled);
+  }
+
+  /** @param {import('./types.js').RepeatMode} mode @returns {Promise<void>} */
+  async setRepeatMode(mode) {
+    return this.#enqueue(() => this.#setRepeatMode(mode));
+  }
+
+  /** @param {import('./types.js').RepeatMode} mode @returns {Promise<void>} */
+  async #setRepeatMode(mode) {
+    this.#queue.setRepeatMode(mode);
+  }
+
+  /**
+   * A non-mutating, host-requested assessment of whether each of a queue
+   * item's sources currently looks usable — never resolves or plays media,
+   * never returns a raw SourceToken.token value (only pluginId and the
+   * token's own displayPath), and emits nothing (superseding
+   * checkSourceAvailability()'s global 'sourceUnavailable' event — a host
+   * that wants to react per-item now does so directly off this method's
+   * return value instead).
+   *
+   * Per source, in order of what was actually checked: 'providerMissing'
+   * when no registered provider matches the ref's pluginId at all;
+   * otherwise, when the matching provider declares
+   * capabilities.requiresRevalidation, a live provider.revalidate(token)
+   * call maps { valid: true } to 'available' and { valid: false } to
+   * 'invalid' (carrying the provider's own .reason, if it gave one — never
+   * the token); otherwise (including when revalidate() itself
+   * throws/rejects) 'unchecked' — a registered provider exists, but this
+   * call made no live attempt to confirm it will actually resolve.
    *
    * A host can call this proactively — right after restoreState(), for
    * every restored queue item — to flag unplayable items before the user
@@ -189,21 +319,46 @@ export class CorePlayer extends EventEmitter {
    * its own; like every other capability-adjacent behavior, surfacing
    * availability eagerly is a host policy choice, not something Core
    * imposes unprompted.
+   *
+   * A queueItemId that doesn't match any current queue item returns
+   * `{ queueItemId, sources: [] }` — an empty-but-well-formed result — the
+   * same "nothing to report" shape a real item with a sourceless track
+   * would also produce, rather than a sentinel or a thrown error, since a
+   * host that already has a queueItemId in hand (e.g. from a state
+   * snapshot) shouldn't have to special-case "it might not exist anymore"
+   * separately from "it exists but has nothing to check."
    * @param {string} queueItemId
-   * @returns {boolean}
+   * @returns {Promise<import('./types.js').SourceAvailabilityResult>}
    */
-  checkSourceAvailability(queueItemId) {
-    const item = this.queue.getItems().find((i) => i.queueItemId === queueItemId);
-    if (!item) return true;
-    const registeredIds = new Set(this.#registry.getSourceProviders().map((p) => p.id));
-    const hasRegisteredProvider = item.track.sources.some((ref) => registeredIds.has(ref.pluginId));
-    if (hasRegisteredProvider) return true;
-    this.emit('sourceUnavailable', {
-      queueItemId,
-      trackId: item.track.id,
-      tokens: item.track.sources.map((ref) => ref.token),
-    });
-    return false;
+  async inspectSourceAvailability(queueItemId) {
+    const item = this.#queue.getItems().find((i) => i.queueItemId === queueItemId);
+    if (!item) return { queueItemId, sources: [] };
+
+    const sources = await Promise.all(item.track.sources.map(async (ref) => {
+      const provider = this.#registry.getSourceProvider(ref.pluginId);
+      const displayPath = ref.token.displayPath;
+      if (!provider) {
+        return { pluginId: ref.pluginId, displayPath, status: /** @type {const} */ ('providerMissing') };
+      }
+      if (provider.capabilities?.requiresRevalidation) {
+        try {
+          const result = await provider.revalidate(ref.token);
+          if (result.valid) {
+            return { pluginId: ref.pluginId, displayPath, status: /** @type {const} */ ('available') };
+          }
+          return {
+            pluginId: ref.pluginId, displayPath,
+            status: /** @type {const} */ ('invalid'),
+            ...(result.reason !== undefined ? { reason: result.reason } : {}),
+          };
+        } catch {
+          return { pluginId: ref.pluginId, displayPath, status: /** @type {const} */ ('unchecked') };
+        }
+      }
+      return { pluginId: ref.pluginId, displayPath, status: /** @type {const} */ ('unchecked') };
+    }));
+
+    return { queueItemId, sources };
   }
 
   /** @param {import('./types.js').CoreState} snapshot @returns {Promise<void>} */
@@ -218,23 +373,23 @@ export class CorePlayer extends EventEmitter {
       try {
         await this.#activeEngine.stop();
       } catch (err) {
-        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
         return;
       }
     }
     this.#activeEngine = undefined;
 
-    this.queue.clear();
+    this.#queue.clear();
     for (const item of snapshot.queue ?? []) {
-      this.queue.add(item.track);
+      this.#queue.add(item.track);
     }
     const currentQueueItem = snapshot.currentQueueItem;
     const originalIndex = currentQueueItem
       ? snapshot.queue.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId)
       : -1;
-    this.queue.setCurrentIndex(originalIndex);
-    this.queue.setShuffle(snapshot.shuffle ?? false);
-    this.queue.setRepeatMode(snapshot.repeatMode ?? 'off');
+    this.#queue.setCurrentIndex(originalIndex);
+    this.#queue.setShuffle(snapshot.shuffle ?? false);
+    this.#queue.setRepeatMode(snapshot.repeatMode ?? 'off');
     this.#volume = snapshot.volume ?? 1;
     this.#policy = snapshot.policy ?? [];
     this.#status = 'idle';
@@ -277,6 +432,11 @@ export class CorePlayer extends EventEmitter {
   }
 
   /**
+   * Core's own operation-chain serializer. Distinct from the public
+   * enqueue() queue command above despite the similar name — this is the
+   * general "run this operation after everything already queued" helper
+   * every public command (play/pause/seek/enqueue/removeFromQueue/etc.)
+   * goes through, not itself a queue mutation.
    * @template T
    * @param {() => Promise<T>} operation
    * @returns {Promise<T>}
@@ -289,13 +449,13 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async #play() {
-    // The queue's current pointer can move (queue.setCurrentIndex(),
-    // clicking a different queue item in a host UI) without going through
+    // The queue's current pointer can move (selectQueueItem(), clicking a
+    // different queue item in a host UI) without going through
     // next()/prev(), which always reload. play() must detect that case —
     // otherwise it treats "playing"/"paused" as "nothing to do" purely
     // from #status, silently resuming/no-op'ing on the stale engine
     // instead of switching to the queue's actual current item.
-    const currentItem = this.queue.getCurrentItem();
+    const currentItem = this.#queue.getCurrentItem();
     const currentItemChanged = currentItem?.queueItemId !== this.#loadedQueueItemId;
 
     if (this.#status === 'playing' && !currentItemChanged) return;
@@ -303,16 +463,16 @@ export class CorePlayer extends EventEmitter {
       try {
         await this.#activeEngine.play();
       } catch (err) {
-        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
         return;
       }
       this.#status = 'playing';
       this.emit('stateChanged');
       return;
     }
-    if (this.queue.getCurrentIndex() === -1) {
-      if (this.queue.getItems().length === 0) return;
-      this.queue.setCurrentIndex(0);
+    if (this.#queue.getCurrentIndex() === -1) {
+      if (this.#queue.getItems().length === 0) return;
+      this.#queue.setCurrentIndex(0);
     }
     await this.#loadAndPlayCurrent();
   }
@@ -323,7 +483,7 @@ export class CorePlayer extends EventEmitter {
     try {
       await this.#activeEngine.pause();
     } catch (err) {
-      this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+      this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
       return;
     }
     this.#status = 'paused';
@@ -336,7 +496,7 @@ export class CorePlayer extends EventEmitter {
       try {
         await this.#activeEngine.stop();
       } catch (err) {
-        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
         return;
       }
     }
@@ -348,14 +508,14 @@ export class CorePlayer extends EventEmitter {
 
   /** @returns {Promise<void>} */
   async #next() {
-    const moved = this.queue.moveNext();
+    const moved = this.#queue.moveNext();
     if (!moved) return;
     await this.#loadAndPlayCurrent();
   }
 
   /** @returns {Promise<void>} */
   async #prev() {
-    const moved = this.queue.movePrevious();
+    const moved = this.#queue.movePrevious();
     if (!moved) return;
     await this.#loadAndPlayCurrent();
   }
@@ -366,13 +526,13 @@ export class CorePlayer extends EventEmitter {
     try {
       await this.#activeEngine.seek(seconds);
     } catch (err) {
-      this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+      this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
     }
   }
 
   /** @returns {Promise<void>} */
   async #loadAndPlayCurrent() {
-    const queueItem = this.queue.getCurrentItem();
+    const queueItem = this.#queue.getCurrentItem();
     if (!queueItem) return;
     this.#loadedQueueItemId = queueItem.queueItemId;
 
@@ -408,9 +568,10 @@ export class CorePlayer extends EventEmitter {
 
     this.#bindEngine(engine);
     try {
-      if (engine.capabilities.queueAuthority === 'engine' && engine.setPlaybackPlan) {
-        const plan = await this.#resolveLookaheadPlan(queueItem, resolved);
-        await engine.setPlaybackPlan(plan);
+      if (engine.capabilities.lookaheadPlayback && engine.setPlaybackPlan) {
+        const entries = await this.#resolveLookaheadPlan(queueItem, resolved);
+        this.#planRevision += 1;
+        await engine.setPlaybackPlan({ revision: this.#planRevision, entries });
       } else {
         await engine.load(resolved);
       }
@@ -426,9 +587,10 @@ export class CorePlayer extends EventEmitter {
   }
 
   /**
-   * Builds the PlaybackPlanEntry[] window handed to a queueAuthority:
-   * 'engine' engine's setPlaybackPlan(), starting at the current queue item
-   * and resolving up to DEFAULT_LOOKAHEAD_WINDOW items ahead of it.
+   * Builds the PlaybackPlanEntry[] window handed to a lookaheadPlayback
+   * engine's setPlaybackPlan() (wrapped by the caller into a full
+   * PlaybackPlan with the current #planRevision), starting at the current
+   * queue item and resolving up to DEFAULT_LOOKAHEAD_WINDOW items ahead.
    *
    * @param {import('./types.js').QueueItem} currentQueueItem
    * @param {import('./types.js').ResolvedSource} currentResolved
@@ -439,21 +601,21 @@ export class CorePlayer extends EventEmitter {
     const plan = [{ queueItemId: currentQueueItem.queueItemId, resolved: currentResolved }];
 
     // repeat: 'one' means the current item plays again, not whatever's
-    // next in the queue. An engine-owned engine has no visibility into
+    // next in the queue. A lookaheadPlayback engine has no visibility into
     // repeat mode on its own — setPlaybackPlan's entries are the only
     // thing it's told — so without this it would auto-advance into the
     // actual next queue item on its own instead of replaying the current
     // one. Padding the window with repeated copies of the current entry
     // makes the engine's own internal auto-advance do the right thing
     // without it ever needing to know repeat mode exists.
-    if (this.queue.getRepeatMode() === 'one') {
+    if (this.#queue.getRepeatMode() === 'one') {
       while (plan.length < DEFAULT_LOOKAHEAD_WINDOW) {
         plan.push({ queueItemId: currentQueueItem.queueItemId, resolved: currentResolved });
       }
       return plan;
     }
 
-    const items = this.queue.getItems();
+    const items = this.#queue.getItems();
     const currentIdx = items.findIndex((i) => i.queueItemId === currentQueueItem.queueItemId);
     if (currentIdx === -1) return plan;
     const providers = this.#registry.getSourceProviders();
@@ -461,12 +623,12 @@ export class CorePlayer extends EventEmitter {
     // not through QueueManager's shuffle history — there is no
     // non-mutating "peek the next N items" method yet — and it does not
     // wrap around for repeat: 'all'. At the last item under repeat: 'all',
-    // the plan simply runs out; the engine reports 'ended' (see
-    // #bindEngine), and #advanceOnEnded's existing queue.moveNext() call
-    // wraps correctly on its own, just via a full reload rather than a
-    // gapless hand-off. Acceptable for now — revisit both alongside each
-    // other if a future engine needs a genuinely gapless shuffle/wrap
-    // transition too.
+    // the plan simply runs out; the engine reports 'playbackExhausted'
+    // (see #bindEngine), and #advanceOnEnded's existing queue.moveNext()
+    // call wraps correctly on its own, just via a full reload rather than
+    // a gapless hand-off. Acceptable for now — revisit both alongside
+    // each other if a future engine needs a genuinely gapless
+    // shuffle/wrap transition too.
     for (let i = currentIdx + 1; i < items.length && plan.length < DEFAULT_LOOKAHEAD_WINDOW; i += 1) {
       const item = items[i];
       try {
@@ -474,8 +636,11 @@ export class CorePlayer extends EventEmitter {
         plan.push({ queueItemId: item.queueItemId, resolved });
       } catch {
         // A lookahead item that fails to resolve is just omitted from the
-        // plan rather than aborting the whole window — normal advancement
-        // will surface a real error if playback ever actually reaches it.
+        // plan rather than aborting the whole window — this is the
+        // non-fatal future-entry-failure path: the current track keeps
+        // playing, and normal advancement (or a future 'playbackExhausted'
+        // report) will surface a real error only if playback ever
+        // actually reaches this item.
       }
     }
     return plan;
@@ -483,16 +648,18 @@ export class CorePlayer extends EventEmitter {
 
   /**
    * Re-resolves and re-pushes the lookahead plan to the active
-   * queueAuthority:'engine' engine after the queue changes shape (add,
-   * remove, reorder) while that engine still owns the currently-loaded
-   * item. A no-op for queueAuthority:'core' engines, or when nothing is
-   * currently loaded.
+   * lookaheadPlayback engine after the queue changes shape (add, remove,
+   * reorder) while that engine still owns the currently-loaded item. A
+   * no-op for a non-lookaheadPlayback engine, or when nothing is
+   * currently loaded. Every call installs a new, strictly-higher
+   * #planRevision — the engine must treat it as superseding whatever
+   * revision it was last given.
    * @returns {Promise<void>}
    */
   async #refreshLookaheadPlan() {
-    if (!this.#activeEngine || this.#activeEngine.capabilities.queueAuthority !== 'engine') return;
+    if (!this.#activeEngine || !this.#activeEngine.capabilities.lookaheadPlayback) return;
     if (!this.#activeEngine.setPlaybackPlan) return;
-    const currentQueueItem = this.queue.getCurrentItem();
+    const currentQueueItem = this.#queue.getCurrentItem();
     if (!currentQueueItem || currentQueueItem.queueItemId !== this.#loadedQueueItemId) return;
     /** @type {import('./types.js').ResolvedSource} */
     let resolved;
@@ -501,29 +668,36 @@ export class CorePlayer extends EventEmitter {
     } catch {
       return;
     }
-    const plan = await this.#resolveLookaheadPlan(currentQueueItem, resolved);
+    const entries = await this.#resolveLookaheadPlan(currentQueueItem, resolved);
+    this.#planRevision += 1;
     try {
-      await this.#activeEngine.setPlaybackPlan(plan);
+      await this.#activeEngine.setPlaybackPlan({ revision: this.#planRevision, entries });
     } catch (err) {
       this.#emitError(currentQueueItem, err instanceof Error ? err.message : String(err));
     }
   }
 
   /**
-   * Reconciles Core's queue pointer after a queueAuthority:'engine' engine
-   * fires 'trackChanged' on its own (e.g. a gapless transition it drove
-   * internally via its plan, without Core calling load()/play() again).
-   * @param {{ queueItemId?: string }} [payload]
+   * Handles a lookaheadPlayback engine's 'playbackStarted' — fired for
+   * every actual start, including the initial play and a gapless
+   * hand-off it drove internally via its plan (without Core calling
+   * load()/play() again). Accepted only for the current #planRevision and
+   * a queueItemId that is genuinely in the queue; an event for an
+   * obsolete revision is silently ignored, not treated as an error — a
+   * later revision always supersedes it, so a stale report reflects state
+   * the engine itself should already be discarding.
+   * @param {{ queueItemId?: string, planRevision?: number }} [payload]
    * @returns {Promise<void>}
    */
-  async #reconcileEngineOwnedTrackChange(payload) {
+  async #handlePlaybackStarted(payload) {
+    if (payload?.planRevision !== this.#planRevision) return;
     const newQueueItemId = payload?.queueItemId;
     if (!newQueueItemId) return;
-    const items = this.queue.getItems();
+    const items = this.#queue.getItems();
     const newIndex = items.findIndex((i) => i.queueItemId === newQueueItemId);
     if (newIndex === -1) return;
-    if (newIndex !== this.queue.getCurrentIndex()) {
-      this.queue.setCurrentIndex(newIndex);
+    if (newIndex !== this.#queue.getCurrentIndex()) {
+      this.#queue.setCurrentIndex(newIndex);
     }
     this.#loadedQueueItemId = newQueueItemId;
     this.#status = 'playing';
@@ -531,13 +705,33 @@ export class CorePlayer extends EventEmitter {
     this.emit('stateChanged');
   }
 
+  /**
+   * Handles a lookaheadPlayback engine's 'playbackExhausted' — fired
+   * after the last actually-started entry in the accepted plan ends
+   * without a prepared successor. Accepted only for the current
+   * #planRevision (same obsolete-revision-is-ignored rule as
+   * #handlePlaybackStarted); when accepted, applies the same
+   * repeat/shuffle/end-of-queue resolution #advanceOnEnded already
+   * implements for a non-lookahead engine's plain 'ended' — an
+   * engine-side pre-buffer exhausting is a "what's next" question with
+   * exactly the same answer as a single-track engine reaching the end of
+   * its one loaded item, so this reuses that method directly rather than
+   * building a second, separate implementation of it.
+   * @param {{ queueItemId?: string, planRevision?: number }} [payload]
+   * @returns {Promise<void>}
+   */
+  async #handlePlaybackExhausted(payload) {
+    if (payload?.planRevision !== this.#planRevision) return;
+    await this.#advanceOnEnded();
+  }
+
   /** @returns {Promise<void>} */
   async #advanceOnEnded() {
-    if (this.queue.getRepeatMode() === 'one' && this.queue.getCurrentItem()) {
+    if (this.#queue.getRepeatMode() === 'one' && this.#queue.getCurrentItem()) {
       await this.#loadAndPlayCurrent();
       return;
     }
-    const moved = this.queue.moveNext();
+    const moved = this.#queue.moveNext();
     if (moved) {
       await this.#loadAndPlayCurrent();
     } else {
@@ -553,7 +747,7 @@ export class CorePlayer extends EventEmitter {
    */
   async #reconcileMissingCurrentItem(missingQueueItemId) {
     if (this.#loadedQueueItemId !== missingQueueItemId) return;
-    if (this.queue.getItems().some((i) => i.queueItemId === missingQueueItemId)) return;
+    if (this.#queue.getItems().some((i) => i.queueItemId === missingQueueItemId)) return;
     await this.#stop();
   }
 
@@ -590,44 +784,44 @@ export class CorePlayer extends EventEmitter {
       }
     });
 
-    // 'ended' is bound unconditionally for both authority modes: a
-    // core-owned engine reports it after every single track (unchanged
-    // from before). An engine-owned engine drives its own queue
+    // 'ended' is bound unconditionally for both engine kinds: a
+    // non-lookahead engine reports it after every single track (unchanged
+    // from before). A lookaheadPlayback engine drives its own queue
     // advancement internally (via the plan handed to setPlaybackPlan) and
-    // reports each successful internal hand-off through 'trackChanged'
+    // reports each successful internal hand-off through 'playbackStarted'
     // instead — Core reconciles its own queue pointer to match rather than
     // treating that as playback finishing — but it still reports 'ended'
-    // once it has genuinely run out of plan to hand off to internally (no
-    // further pre-resolved entry ready). Since the lookahead plan is kept
-    // topped up as the engine consumes it (see #refreshLookaheadPlan, and
-    // the queue 'changed' handler above that triggers it), that only
-    // happens once the engine has reached the real end of what
-    // #resolveLookaheadPlan could resolve — so #advanceOnEnded's existing
-    // repeat/shuffle-aware queue.moveNext() call is the right thing to run
-    // either way, and an engine-owned engine doesn't need — and must not
-    // build — a second, separate "what's next" implementation of its own.
+    // if it has no lookahead plan machinery in play at all for the current
+    // load. In practice a lookaheadPlayback engine reports exhaustion via
+    // 'playbackExhausted' (bound below), not 'ended' — 'ended' stays bound
+    // here for engines that never opt into lookahead at all.
     bind('ended', () => {
       this.#enqueue(() => this.#advanceOnEnded()).catch((err) => {
-        this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
       });
     });
-    if (engine.capabilities.queueAuthority === 'engine') {
-      bind('trackChanged', (payload) => {
-        this.#enqueue(() => this.#reconcileEngineOwnedTrackChange(payload)).catch((err) => {
-          this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+    if (engine.capabilities.lookaheadPlayback) {
+      bind('playbackStarted', (payload) => {
+        this.#enqueue(() => this.#handlePlaybackStarted(payload)).catch((err) => {
+          this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
+        });
+      });
+      bind('playbackExhausted', (payload) => {
+        this.#enqueue(() => this.#handlePlaybackExhausted(payload)).catch((err) => {
+          this.#emitError(this.#queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
         });
       });
     }
 
     bind('error', (error) => {
-      this.#emitError(this.queue.getCurrentItem(), error instanceof Error ? error.message : String(error));
+      this.#emitError(this.#queue.getCurrentItem(), error instanceof Error ? error.message : String(error));
     });
 
     // 'transportCommand' (a lock-screen/CarPlay/Android-Auto button press,
     // on a nowPlaying-capable engine) is deliberately NOT bound here —
     // translating it into play()/pause()/next()/prev() is host policy, the
     // same way capabilities never drive routing decisions on their own
-    // beyond requiresRevalidation and queueAuthority. A host that wants
+    // beyond requiresRevalidation and lookaheadPlayback. A host that wants
     // this wires engine.on('transportCommand', ...) itself, directly
     // against the engine instance it already holds a reference to.
   }
@@ -645,7 +839,21 @@ export class CorePlayer extends EventEmitter {
       queueItemId: queueItem?.queueItemId,
       trackId: queueItem?.track.id,
       reason,
-      failedSources,
+      // failedSources arrives here (from Resolver.js's TrackResolutionError,
+      // when this call is reached via a resolution failure) with each
+      // entry still carrying its full SourceToken, including the opaque
+      // `.token` value — TrackResolutionError is an internal control-flow
+      // exception this method is the only consumer of, so keeping the full
+      // token there is harmless. This public 'error' event is a different
+      // boundary, though: it's the one place that value could leak to a
+      // host's logs/UI. Redact down to pluginId + the token's own
+      // displayPath (documented on SourceToken as safe to show/log) before
+      // it leaves Core — never the raw token.
+      failedSources: failedSources.map((failure) => ({
+        pluginId: failure.pluginId,
+        displayPath: failure.token?.displayPath,
+        reason: failure.reason,
+      })),
     });
     this.emit('stateChanged');
   }

@@ -25,11 +25,11 @@ test('registerMetadataProvider and registerPlaylistProvider delegate without thr
   assert.doesNotThrow(() => core.registerPlaylistProvider({ id: 'local', contractVersion: CONTRACT_VERSION, fetchPlaylist: async () => [] }));
 });
 
-test('queue mutations emit queueChanged on the core instance', () => {
+test('queue mutations emit queueChanged on the core instance', async () => {
   const core = new CorePlayer();
   let fired = 0;
   core.on('queueChanged', () => { fired += 1; });
-  core.queue.add(makeTrack('t1'));
+  await core.enqueue(makeTrack('t1'));
   assert.equal(fired, 1);
 });
 
@@ -37,7 +37,7 @@ test('getState reflects the queue, policy, and default idle status', async () =>
   const core = new CorePlayer();
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(makeTrack('t1'));
+  await core.enqueue(makeTrack('t1'));
   const state = core.getState();
   assert.equal(state.status, 'idle');
   assert.equal(state.queue.length, 1);
@@ -49,8 +49,8 @@ test('getState reflects the queue, policy, and default idle status', async () =>
 
 test('restoreState rebuilds the queue in order and preserves the current item', async () => {
   const core = new CorePlayer();
-  core.queue.add([makeTrack('t1'), makeTrack('t2')]);
-  core.queue.setCurrentIndex(1);
+  const items = await core.enqueue([makeTrack('t1'), makeTrack('t2')]);
+  await core.selectQueueItem(items[1].queueItemId);
   const snapshot = core.getState();
 
   const restored = new CorePlayer();
@@ -66,7 +66,7 @@ test('restoreState rebuilds the queue in order and preserves the current item', 
 
 test('restoreState with no current item leaves the queue unselected', async () => {
   const core = new CorePlayer();
-  core.queue.add(makeTrack('t1'));
+  await core.enqueue(makeTrack('t1'));
   const snapshot = core.getState();
 
   const restored = new CorePlayer();
@@ -89,7 +89,7 @@ test('play resolves the current track and starts the engine', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   const trackChanged = [];
   core.on('trackChanged', (item) => trackChanged.push(item));
@@ -119,7 +119,7 @@ test('play emits an error and stops when resolution fails for every source', asy
   core.registerSourceProvider(provider);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   const errors = [];
   core.on('error', (payload) => errors.push(payload));
@@ -129,9 +129,39 @@ test('play emits an error and stops when resolution fails for every source', asy
   assert.equal(core.getState().status, 'error');
   assert.equal(errors.length, 1);
   assert.equal(errors[0].trackId, 't1');
+  // Redacted: pluginId + the token's own displayPath (undefined here, since
+  // trackWithLocalSource's fixture token doesn't set one) — never the raw
+  // token value ('t1-src').
   assert.deepEqual(errors[0].failedSources, [
-    { pluginId: 'local-fs', token: { pluginId: 'local-fs', token: 't1-src' }, reason: 'file missing' },
+    { pluginId: 'local-fs', displayPath: undefined, reason: 'file missing' },
   ]);
+});
+
+test('an "error" event\'s failedSources never contains the raw token value', async () => {
+  const core = new CorePlayer();
+  // A recognizable sentinel, grepped for below in the fully-serialized
+  // event payload — proves the redaction holds regardless of exactly which
+  // field of the failure shape might otherwise have carried it.
+  const SENTINEL_TOKEN = 'THIS-RAW-TOKEN-MUST-NEVER-LEAK-abc123';
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => { throw new Error('file missing'); },
+  });
+  core.registerSourceProvider(provider);
+  core.setPolicy([{ kind: 'local' }]);
+  await core.initializePlugins({});
+  await core.enqueue(makeTrack('t1', [
+    { pluginId: 'local-fs', token: { pluginId: 'local-fs', token: SENTINEL_TOKEN }, kind: 'local' },
+  ]));
+
+  const errors = [];
+  core.on('error', (payload) => errors.push(payload));
+
+  await core.play();
+
+  assert.equal(errors.length, 1);
+  const serialized = JSON.stringify(errors[0]);
+  assert.equal(serialized.includes(SENTINEL_TOKEN), false, 'the raw token must not appear anywhere in the serialized error payload');
 });
 
 test('play emits an error when no registered engine can play the resolved source', async () => {
@@ -145,7 +175,7 @@ test('play emits an error when no registered engine can play the resolved source
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   const errors = [];
   core.on('error', (payload) => errors.push(payload));
@@ -170,7 +200,7 @@ test('a throwing canPlay() surfaces as an error event instead of leaving status 
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   const errors = [];
   core.on('error', (payload) => errors.push(payload));
@@ -194,7 +224,7 @@ test('pause and resume do not re-resolve or reload the track', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   await core.play();
   await core.pause();
@@ -217,7 +247,7 @@ test('stop resets status and position without clearing the queue', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   await core.play();
   await core.stop();
@@ -240,7 +270,7 @@ test('next loads and plays the following queue item', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
 
   await core.play();
   await core.next();
@@ -260,7 +290,7 @@ test('next is a no-op at the end of the queue', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   await core.play();
   await core.next();
@@ -280,7 +310,7 @@ test('prev loads and plays the preceding queue item', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
 
   await core.play();
   await core.next();
@@ -305,7 +335,7 @@ test('seek delegates to the active engine only once a track is loaded', async ()
   core.registerSourceProvider(provider);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
   await core.seek(30);
   assert.deepEqual(engine.seekCalls, [30]);
@@ -322,7 +352,7 @@ test('engine progress events emit a throttled positionChanged', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
   const positions = [];
@@ -346,7 +376,7 @@ test('engine ended event auto-advances to the next queue item', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.play();
 
   engine._simulate('ended');
@@ -366,7 +396,7 @@ test('engine ended event sets status to idle when the queue is finished', async 
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
   engine._simulate('ended');
@@ -386,7 +416,7 @@ test('engine error event during playback stops and emits error', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
   const errors = [];
@@ -416,7 +446,7 @@ test('an engine error that arrives mid-load does not permanently disable reconci
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
 
   const playPromise = core.play();
   await new Promise((resolve) => setImmediate(resolve));
@@ -427,7 +457,7 @@ test('an engine error that arrives mid-load does not permanently disable reconci
   assert.equal(core.getState().status, 'playing');
 
   const current = core.getState().currentQueueItem;
-  core.queue.remove(current.queueItemId);
+  await core.removeFromQueue(current.queueItemId);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(core.getState().status, 'idle');
@@ -446,7 +476,7 @@ test('an engine load/play failure is caught and surfaced as an error event, not 
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   const errors = [];
   core.on('error', (payload) => errors.push(payload));
@@ -470,7 +500,7 @@ test('a resume failure (engine.play() rejecting from paused) is caught and surfa
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   await core.play();
   await core.pause();
@@ -502,7 +532,7 @@ test('rebinding a previously-used playback engine does not register duplicate li
   core.registerPlaybackEngine(engineB);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
 
   await core.play();
   await core.next();
@@ -537,7 +567,7 @@ test('concurrent next() calls resolve in order rather than racing', async () => 
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([
+  await core.enqueue([
     trackWithLocalSource('t1', 'l1'),
     trackWithLocalSource('t2', 'l2'),
     trackWithLocalSource('t3', 'l3'),
@@ -565,7 +595,7 @@ test('pause() issued during an in-flight play() still ends up paused', async () 
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   const playPromise = core.play();
   const pausePromise = core.pause();
@@ -587,11 +617,11 @@ test('removing the currently-playing item stops playback and returns to idle', a
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.play();
 
   const current = core.getState().currentQueueItem;
-  core.queue.remove(current.queueItemId);
+  await core.removeFromQueue(current.queueItemId);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(core.getState().status, 'idle');
@@ -609,10 +639,10 @@ test('clearing the queue during playback stops playback and returns to idle', as
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
-  core.queue.clear();
+  await core.clearQueue();
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(core.getState().status, 'idle');
@@ -630,18 +660,18 @@ test('reordering the queue during playback does not interrupt it', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.play();
 
   const current = core.getState().currentQueueItem;
-  core.queue.reorder(current.queueItemId, 1);
+  await core.reorderQueueItem(current.queueItemId, 1);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(core.getState().status, 'playing');
   assert.equal(engine.stopCalls, 0);
 });
 
-test('a direct queue.setCurrentIndex() pointer jump does not interrupt playback', async () => {
+test('a direct selectQueueItem() pointer jump does not interrupt playback', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -652,17 +682,17 @@ test('a direct queue.setCurrentIndex() pointer jump does not interrupt playback'
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  const items = await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.play();
 
-  core.queue.setCurrentIndex(1);
+  await core.selectQueueItem(items[1].queueItemId);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(core.getState().status, 'playing');
   assert.equal(engine.stopCalls, 0);
 });
 
-test('play() after queue.setCurrentIndex() to a different item while already playing switches to that item', async () => {
+test('play() after selectQueueItem() to a different item while already playing switches to that item', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -673,10 +703,10 @@ test('play() after queue.setCurrentIndex() to a different item while already pla
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  const items = await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.play();
 
-  core.queue.setCurrentIndex(1);
+  await core.selectQueueItem(items[1].queueItemId);
   await core.play();
 
   assert.equal(core.getState().status, 'playing');
@@ -684,7 +714,7 @@ test('play() after queue.setCurrentIndex() to a different item while already pla
   assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l2.flac', mime: 'audio/flac' });
 });
 
-test('play() after queue.setCurrentIndex() to a different item while paused loads and plays the new item, not the old one', async () => {
+test('play() after selectQueueItem() to a different item while paused loads and plays the new item, not the old one', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -695,11 +725,11 @@ test('play() after queue.setCurrentIndex() to a different item while paused load
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  const items = await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.play();
   await core.pause();
 
-  core.queue.setCurrentIndex(1);
+  await core.selectQueueItem(items[1].queueItemId);
   await core.play();
 
   assert.equal(core.getState().status, 'playing');
@@ -718,7 +748,7 @@ test('play() with no queue-item change while already playing stays a no-op (regr
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   const trackChanged = [];
   core.on('trackChanged', (item) => trackChanged.push(item));
   await core.play();
@@ -740,7 +770,7 @@ test('normal next() navigation is unaffected by reconciliation', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.play();
 
   await core.next();
@@ -761,7 +791,7 @@ test('restoreState on an already-active instance does not leave a stale loaded-i
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
   core.restoreState({
@@ -794,7 +824,7 @@ test('restoreState() stops the active engine', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
   await core.restoreState({
@@ -819,7 +849,7 @@ test('restoreState() is serialized against an in-flight play()', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   const playPromise = core.play();
   const snapshot = { status: 'idle', currentQueueItem: undefined, position: 7, duration: 0, queue: [], policy: [] };
@@ -846,7 +876,7 @@ test('restoreState() does not trigger a spurious reconciliation stop during the 
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
   // Restoring a snapshot with several items exercises multiple
@@ -877,19 +907,20 @@ test('repeat "one": the engine ending naturally replays the same queue item inst
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
-  core.queue.setRepeatMode('one');
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.setRepeatMode('one');
   await core.play();
 
-  const beforeIndex = core.queue.getCurrentIndex();
   const beforeItemId = core.getState().currentQueueItem.queueItemId;
+  const beforeIndex = core.getState().queue.findIndex((i) => i.queueItemId === beforeItemId);
   const loadCallsBefore = engine.playCalls;
 
   engine._simulate('ended');
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(core.queue.getCurrentIndex(), beforeIndex);
-  assert.equal(core.getState().currentQueueItem.queueItemId, beforeItemId);
+  const afterItemId = core.getState().currentQueueItem.queueItemId;
+  assert.equal(core.getState().queue.findIndex((i) => i.queueItemId === afterItemId), beforeIndex);
+  assert.equal(afterItemId, beforeItemId);
   assert.equal(core.getState().currentQueueItem.track.id, 't1');
   assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l1.flac', mime: 'audio/flac' });
   assert.ok(engine.playCalls > loadCallsBefore);
@@ -907,8 +938,8 @@ test('repeat "one" does not block a manual next() from moving to a different tra
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
-  core.queue.setRepeatMode('one');
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.setRepeatMode('one');
   await core.play();
 
   await core.next();
@@ -919,9 +950,9 @@ test('repeat "one" does not block a manual next() from moving to a different tra
 
 test('getState reflects shuffle and repeatMode; restoreState round-trips them', async () => {
   const core = new CorePlayer();
-  core.queue.add([makeTrack('t1'), makeTrack('t2')]);
-  core.queue.setShuffle(true);
-  core.queue.setRepeatMode('all');
+  await core.enqueue([makeTrack('t1'), makeTrack('t2')]);
+  await core.setShuffle(true);
+  await core.setRepeatMode('all');
   const snapshot = core.getState();
   assert.equal(snapshot.shuffle, true);
   assert.equal(snapshot.repeatMode, 'all');
@@ -935,7 +966,7 @@ test('getState reflects shuffle and repeatMode; restoreState round-trips them', 
 
 test('restoreState defaults shuffle/repeatMode to false/"off" for a snapshot missing those fields', async () => {
   const core = new CorePlayer();
-  core.queue.add(makeTrack('t1'));
+  await core.enqueue(makeTrack('t1'));
   const snapshot = core.getState();
   delete snapshot.shuffle;
   delete snapshot.repeatMode;
@@ -947,7 +978,7 @@ test('restoreState defaults shuffle/repeatMode to false/"off" for a snapshot mis
   assert.equal(restoredState.repeatMode, 'off');
 });
 
-test('repeat "one": if setCurrentIndex(-1) clears the current item before "ended" fires, it falls back to normal advance instead of hanging with no current item', async () => {
+test('repeat "one": if the current item is deselected before "ended" fires, it falls back to normal advance instead of hanging with no current item', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -958,19 +989,25 @@ test('repeat "one": if setCurrentIndex(-1) clears the current item before "ended
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
-  core.queue.setRepeatMode('one');
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.setRepeatMode('one');
   await core.play();
 
-  // setCurrentIndex(-1) deselects without removing anything from the
-  // queue, so it does NOT go through remove()'s "item vanished from the
-  // queue entirely" reconciliation path (#reconcileMissingCurrentItem) —
-  // both items are still present in getItems(), just nothing is
-  // "current" anymore. This isolates the repeat-one branch's own
-  // robustness (it must not blindly call #loadAndPlayCurrent() against
-  // an empty current-item) from that unrelated, pre-existing safety net.
-  core.queue.setCurrentIndex(-1);
-  assert.equal(core.queue.getCurrentItem(), undefined);
+  // Deselecting the current item while leaving both items in the queue
+  // (no current item, but getItems().length > 0) is no longer reachable
+  // via a direct queue index poke — QueueManager is private to CorePlayer
+  // now (see Task 2 of the v0.4 plan). restoreState() with the same items
+  // but an undefined currentQueueItem reaches the identical internal
+  // state through the public surface instead — this does NOT go through
+  // removeFromQueue()'s "item vanished from the queue entirely"
+  // reconciliation path (#reconcileMissingCurrentItem), so it still
+  // isolates the repeat-one branch's own robustness (it must not blindly
+  // call #loadAndPlayCurrent() against an empty current-item) from that
+  // unrelated, pre-existing safety net.
+  const stateBeforeDeselect = core.getState();
+  await core.restoreState({ ...stateBeforeDeselect, currentQueueItem: undefined });
+  assert.equal(core.getState().currentQueueItem, undefined);
+  assert.equal(core.getState().queue.length, 2);
 
   engine._simulate('ended');
   await new Promise((resolve) => setImmediate(resolve));
@@ -1008,7 +1045,7 @@ test('setVolume(NaN) does not propagate to the active engine', async () => {
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
   core.setVolume(0.3);
 
@@ -1029,7 +1066,7 @@ test('setVolume while a track is loaded calls the active engine\'s setVolume imm
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
   await core.play();
 
   core.setVolume(0.3);
@@ -1049,7 +1086,7 @@ test('a volume set before playback starts is applied to the engine once a track 
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   core.setVolume(0.7);
   assert.equal(engine.volumeCalls.length, 0); // nothing loaded yet, nothing to apply to
@@ -1070,7 +1107,7 @@ test('volume set on one track carries over when moving to the next track', async
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
   await core.initializePlugins({});
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   core.setVolume(0.2);
   await core.play();
 
@@ -1081,7 +1118,7 @@ test('volume set on one track carries over when moving to the next track', async
 
 test('getState reflects volume; restoreState round-trips it', async () => {
   const core = new CorePlayer();
-  core.queue.add(makeTrack('t1'));
+  await core.enqueue(makeTrack('t1'));
   core.setVolume(0.6);
   const snapshot = core.getState();
   assert.equal(snapshot.volume, 0.6);
@@ -1094,7 +1131,7 @@ test('getState reflects volume; restoreState round-trips it', async () => {
 
 test('restoreState defaults volume to 1 for a snapshot missing that field', async () => {
   const core = new CorePlayer();
-  core.queue.add(makeTrack('t1'));
+  await core.enqueue(makeTrack('t1'));
   const snapshot = core.getState();
   delete snapshot.volume;
 
@@ -1114,7 +1151,7 @@ test('play() throws PluginsNotInitializedError before initializePlugins() has be
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(createMockPlaybackEngine({ id: 'web-audio' }));
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   await assert.rejects(() => core.play(), (err) => {
     assert.ok(err instanceof PluginsNotInitializedError);
@@ -1160,7 +1197,7 @@ test('dispose() calls dispose() on every registered source provider and playback
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.add(trackWithLocalSource('t1'));
+  await core.enqueue(trackWithLocalSource('t1'));
 
   await core.initializePlugins({});
   await core.play();
@@ -1170,9 +1207,9 @@ test('dispose() calls dispose() on every registered source provider and playback
   await assert.rejects(() => core.play(), PluginsNotInitializedError);
 });
 
-// --- v0.2.0 queueAuthority: 'engine' (lookahead plan) ----------------------
+// --- v0.4.0 lookaheadPlayback (revisioned lookahead plan) -------------------
 
-test('a queueAuthority: "engine" engine receives a lookahead plan via setPlaybackPlan instead of load()', async () => {
+test('a lookaheadPlayback engine receives a revisioned lookahead plan via setPlaybackPlan instead of load()', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -1180,12 +1217,12 @@ test('a queueAuthority: "engine" engine receives a lookahead plan via setPlaybac
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
-    capabilities: { gapless: true, backgroundPlayback: true, queueAuthority: 'engine' },
+    capabilities: { gapless: true, backgroundPlayback: true, lookaheadPlayback: true },
   });
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.add([
+  await core.enqueue([
     trackWithLocalSource('t1', 'l1'),
     trackWithLocalSource('t2', 'l2'),
     trackWithLocalSource('t3', 'l3'),
@@ -1195,15 +1232,16 @@ test('a queueAuthority: "engine" engine receives a lookahead plan via setPlaybac
 
   await core.play();
 
-  assert.equal(engine.loaded, null, 'load() is never called for a queueAuthority: engine engine');
+  assert.equal(engine.loaded, null, 'load() is never called for a lookaheadPlayback engine');
   assert.equal(engine.playCalls, 1);
   assert.deepEqual(engine.plan.map((p) => p.resolved.url), [
     'file:///l1.flac', 'file:///l2.flac', 'file:///l3.flac',
   ]);
+  assert.equal(typeof engine.planRevision, 'number');
   assert.equal(core.getState().status, 'playing');
 });
 
-test('a queueAuthority: "engine" engine\'s genuine "ended" (no more plan to hand off to) advances the queue, same as a core-owned engine\'s does', async () => {
+test('a lookaheadPlayback engine\'s genuine "ended" (no more plan to hand off to) advances the queue, same as a non-lookahead engine\'s does', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -1211,12 +1249,12 @@ test('a queueAuthority: "engine" engine\'s genuine "ended" (no more plan to hand
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
-    capabilities: { gapless: true, backgroundPlayback: true, queueAuthority: 'engine' },
+    capabilities: { gapless: true, backgroundPlayback: true, lookaheadPlayback: true },
   });
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.initializePlugins({});
   await core.play();
 
@@ -1225,7 +1263,7 @@ test('a queueAuthority: "engine" engine\'s genuine "ended" (no more plan to hand
   // has reached the true end of a shorter-than-expected window) — Core
   // must not just sit there forever; #advanceOnEnded's normal
   // queue.moveNext() + reload path applies exactly as it would for a
-  // core-owned engine.
+  // non-lookahead engine.
   engine._simulate('ended');
   await new Promise((resolve) => setImmediate(resolve));
 
@@ -1233,7 +1271,7 @@ test('a queueAuthority: "engine" engine\'s genuine "ended" (no more plan to hand
   assert.equal(core.getState().status, 'playing');
 });
 
-test('a queueAuthority: "engine" engine\'s "trackChanged" event reconciles Core\'s queue pointer', async () => {
+test('a lookaheadPlayback engine\'s "playbackStarted" event reconciles Core\'s queue pointer', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -1241,28 +1279,28 @@ test('a queueAuthority: "engine" engine\'s "trackChanged" event reconciles Core\
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
-    capabilities: { gapless: true, backgroundPlayback: true, queueAuthority: 'engine' },
+    capabilities: { gapless: true, backgroundPlayback: true, lookaheadPlayback: true },
   });
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  const [, second] = core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  const [, second] = await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.initializePlugins({});
   await core.play();
 
   const trackChanged = [];
   core.on('trackChanged', (item) => trackChanged.push(item.track.id));
 
-  engine._simulate('trackChanged', { queueItemId: second.queueItemId });
+  engine._simulate('playbackStarted', { queueItemId: second.queueItemId, planRevision: engine.planRevision });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(core.queue.getCurrentIndex(), 1);
+  assert.equal(core.getState().currentQueueItem.queueItemId, second.queueItemId);
   assert.equal(core.getState().currentQueueItem.track.id, 't2');
   assert.equal(core.getState().status, 'playing');
   assert.deepEqual(trackChanged, ['t2']);
 });
 
-test('queue mutations refresh the lookahead plan of an active queueAuthority: "engine" engine', async () => {
+test('a "playbackStarted"/"playbackExhausted" event for a stale plan revision is ignored, not applied', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -1270,24 +1308,59 @@ test('queue mutations refresh the lookahead plan of an active queueAuthority: "e
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
-    capabilities: { gapless: true, backgroundPlayback: true, queueAuthority: 'engine' },
+    capabilities: { gapless: true, backgroundPlayback: true, lookaheadPlayback: true },
   });
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  const [, second] = await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.initializePlugins({});
+  await core.play();
+
+  const staleRevision = engine.planRevision - 1;
+  const trackChanged = [];
+  core.on('trackChanged', (item) => trackChanged.push(item.track.id));
+
+  // A report tagged with an older revision than the one Core most recently
+  // installed must be silently ignored — not treated as an error, and not
+  // applied to Core's queue pointer.
+  engine._simulate('playbackStarted', { queueItemId: second.queueItemId, planRevision: staleRevision });
+  engine._simulate('playbackExhausted', { queueItemId: second.queueItemId, planRevision: staleRevision });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(core.getState().currentQueueItem.track.id, 't1');
+  assert.deepEqual(trackChanged, []);
+  assert.equal(core.getState().status, 'playing');
+});
+
+test('queue mutations refresh the lookahead plan of an active lookaheadPlayback engine, installing a new, strictly higher plan revision', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
+  });
+  const engine = createMockPlaybackEngine({
+    id: 'gapless-engine',
+    capabilities: { gapless: true, backgroundPlayback: true, lookaheadPlayback: true },
+  });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.initializePlugins({});
   await core.play();
 
   const planBefore = engine.plan;
-  core.queue.add(trackWithLocalSource('t3', 'l3'));
+  const revisionBefore = engine.planRevision;
+  await core.enqueue(trackWithLocalSource('t3', 'l3'));
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.notEqual(engine.plan, planBefore);
-  assert.deepEqual(engine.plan.map((p) => p.queueItemId), core.queue.getItems().map((i) => i.queueItemId));
+  assert.ok(engine.planRevision > revisionBefore, 'a queue mutation installs a new, strictly higher plan revision');
+  assert.deepEqual(engine.plan.map((p) => p.queueItemId), core.getState().queue.map((i) => i.queueItemId));
 });
 
-test('repeat: "one" pads a queueAuthority: "engine" engine\'s lookahead plan with the current item instead of the actual next queue item', async () => {
+test('repeat: "one" pads a lookaheadPlayback engine\'s lookahead plan with the current item instead of the actual next queue item', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
@@ -1295,24 +1368,61 @@ test('repeat: "one" pads a queueAuthority: "engine" engine\'s lookahead plan wit
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
-    capabilities: { gapless: true, backgroundPlayback: true, queueAuthority: 'engine' },
+    capabilities: { gapless: true, backgroundPlayback: true, lookaheadPlayback: true },
   });
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.setRepeatMode('one');
-  const [first] = core.queue.add([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
+  await core.setRepeatMode('one');
+  const [first] = await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2')]);
   await core.initializePlugins({});
 
   await core.play();
 
-  // Without repeat-mode awareness, an engine-owned engine would have
+  // Without repeat-mode awareness, a lookaheadPlayback engine would have
   // pre-buffered t2 as "next" (the actual next queue item) and would
   // auto-advance into it on its own — bypassing repeat: 'one' entirely.
   // Every entry in the plan should instead be the current item, so the
   // engine's own internal auto-advance just replays it.
   assert.equal(engine.plan.length, 3);
   assert.ok(engine.plan.every((p) => p.queueItemId === first.queueItemId));
+});
+
+test('a lookahead entry that fails to resolve is omitted from the plan without aborting playback of the current track', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => {
+      if (ref.token.token === 'l2') throw new Error('l2 is temporarily unavailable');
+      return { kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' };
+    },
+  });
+  const engine = createMockPlaybackEngine({
+    id: 'gapless-engine',
+    capabilities: { gapless: true, backgroundPlayback: true, lookaheadPlayback: true },
+  });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  await core.enqueue([trackWithLocalSource('t1', 'l1'), trackWithLocalSource('t2', 'l2'), trackWithLocalSource('t3', 'l3')]);
+  await core.initializePlugins({});
+
+  const errors = [];
+  core.on('error', (payload) => errors.push(payload));
+
+  await core.play();
+
+  // t2's lookahead resolve failure is non-fatal: the current track (t1)
+  // still starts normally, no 'error' event fires for it, and the failing
+  // entry is simply missing from the plan handed to the engine — t3
+  // resolves fine and is still included.
+  assert.equal(core.getState().status, 'playing');
+  assert.equal(core.getState().currentQueueItem.track.id, 't1');
+  assert.deepEqual(errors, []);
+  assert.deepEqual(engine.plan.map((p) => p.queueItemId), [
+    core.getState().queue[0].queueItemId,
+    core.getState().queue[2].queueItemId,
+  ]);
 });
 
 test('dispose() detaches every listener #bindEngine ever attached, via engine.off()', async () => {
@@ -1325,7 +1435,7 @@ test('dispose() detaches every listener #bindEngine ever attached, via engine.of
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(engine);
   core.setPolicy([{ kind: 'local' }]);
-  core.queue.add(trackWithLocalSource('t1', 'l1'));
+  await core.enqueue(trackWithLocalSource('t1', 'l1'));
   await core.initializePlugins({});
   await core.play();
 
@@ -1340,38 +1450,108 @@ test('dispose() detaches every listener #bindEngine ever attached, via engine.of
   assert.equal(engine._listenerCount('error'), 0);
 });
 
-test('checkSourceAvailability returns true and emits nothing when a queue item has a registered provider', async () => {
+test('inspectSourceAvailability reports "providerMissing" when no provider is registered for a queue item\'s source', async () => {
+  const core = new CorePlayer();
+  const [item] = await core.enqueue(trackWithLocalSource('t1', 'l1'));
+
+  const result = await core.inspectSourceAvailability(item.queueItemId);
+
+  // Redacted: pluginId + the token's own displayPath — never the raw
+  // token value ('l1').
+  assert.deepEqual(result, {
+    queueItemId: item.queueItemId,
+    sources: [{ pluginId: 'local-fs', displayPath: undefined, status: 'providerMissing' }],
+  });
+});
+
+test('inspectSourceAvailability reports "unchecked" for a registered provider that does not require revalidation', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
     resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
+    capabilities: { offline: true, requiresRevalidation: false },
   });
   core.registerSourceProvider(provider);
-  const [item] = core.queue.add(trackWithLocalSource('t1', 'l1'));
+  const [item] = await core.enqueue(trackWithLocalSource('t1', 'l1'));
 
-  let emitted = false;
-  core.on('sourceUnavailable', () => { emitted = true; });
+  const result = await core.inspectSourceAvailability(item.queueItemId);
 
-  assert.equal(core.checkSourceAvailability(item.queueItemId), true);
-  assert.equal(emitted, false);
-});
-
-test('checkSourceAvailability returns false and emits sourceUnavailable when no provider is registered for a queue item\'s sources', async () => {
-  const core = new CorePlayer();
-  const [item] = core.queue.add(trackWithLocalSource('t1', 'l1'));
-
-  let payload;
-  core.on('sourceUnavailable', (p) => { payload = p; });
-
-  assert.equal(core.checkSourceAvailability(item.queueItemId), false);
-  assert.deepEqual(payload, {
+  assert.deepEqual(result, {
     queueItemId: item.queueItemId,
-    trackId: 't1',
-    tokens: [{ pluginId: 'local-fs', token: 'l1' }],
+    sources: [{ pluginId: 'local-fs', displayPath: undefined, status: 'unchecked' }],
   });
 });
 
-test('checkSourceAvailability returns true for a queueItemId that no longer exists in the queue', () => {
+test('inspectSourceAvailability reports "available" when a requiresRevalidation provider\'s revalidate() reports valid: true', async () => {
   const core = new CorePlayer();
-  assert.equal(core.checkSourceAvailability('missing-item'), true);
+  const provider = createMockSourceProvider({
+    id: 'subsonic', kind: 'streaming',
+    resolveImpl: async () => ({ kind: 'url', url: 'https://example/track', mime: 'audio/flac' }),
+    capabilities: { offline: false, requiresRevalidation: true },
+    revalidateImpl: async (token) => ({ valid: true, token }),
+  });
+  core.registerSourceProvider(provider);
+  const [item] = await core.enqueue(makeTrack('t1', [
+    { pluginId: 'subsonic', token: { pluginId: 'subsonic', token: 's1' }, kind: 'streaming' },
+  ]));
+
+  const result = await core.inspectSourceAvailability(item.queueItemId);
+
+  assert.deepEqual(result, {
+    queueItemId: item.queueItemId,
+    sources: [{ pluginId: 'subsonic', displayPath: undefined, status: 'available' }],
+  });
+});
+
+test('inspectSourceAvailability reports "invalid" with the provider\'s reason when a requiresRevalidation provider\'s revalidate() reports valid: false', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'subsonic', kind: 'streaming',
+    resolveImpl: async () => ({ kind: 'url', url: 'https://example/track', mime: 'audio/flac' }),
+    capabilities: { offline: false, requiresRevalidation: true },
+    revalidateImpl: async () => ({ valid: false, reason: 'no longer authorized' }),
+  });
+  core.registerSourceProvider(provider);
+  const [item] = await core.enqueue(makeTrack('t1', [
+    { pluginId: 'subsonic', token: { pluginId: 'subsonic', token: 's1' }, kind: 'streaming' },
+  ]));
+
+  const result = await core.inspectSourceAvailability(item.queueItemId);
+
+  assert.deepEqual(result, {
+    queueItemId: item.queueItemId,
+    sources: [{ pluginId: 'subsonic', displayPath: undefined, status: 'invalid', reason: 'no longer authorized' }],
+  });
+});
+
+test('inspectSourceAvailability reports "unchecked" — not a thrown error out of inspectSourceAvailability itself — when a requiresRevalidation provider\'s revalidate() call throws', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'subsonic', kind: 'streaming',
+    resolveImpl: async () => ({ kind: 'url', url: 'https://example/track', mime: 'audio/flac' }),
+    capabilities: { offline: false, requiresRevalidation: true },
+    // Simulates "revalidate support unavailable right now" (e.g. offline,
+    // server unreachable) rather than a definitive valid/invalid answer —
+    // this is the "revalidation call itself throws/rejects" branch of
+    // 'unchecked', distinct from the requiresRevalidation: false branch
+    // covered above.
+    revalidateImpl: async () => { throw new Error('network unreachable'); },
+  });
+  core.registerSourceProvider(provider);
+  const [item] = await core.enqueue(makeTrack('t1', [
+    { pluginId: 'subsonic', token: { pluginId: 'subsonic', token: 's1' }, kind: 'streaming' },
+  ]));
+
+  const result = await core.inspectSourceAvailability(item.queueItemId);
+
+  assert.deepEqual(result, {
+    queueItemId: item.queueItemId,
+    sources: [{ pluginId: 'subsonic', displayPath: undefined, status: 'unchecked' }],
+  });
+});
+
+test('inspectSourceAvailability returns an empty sources array for a queueItemId that no longer exists in the queue', async () => {
+  const core = new CorePlayer();
+  const result = await core.inspectSourceAvailability('missing-item');
+  assert.deepEqual(result, { queueItemId: 'missing-item', sources: [] });
 });
