@@ -1,0 +1,21 @@
+{
+  "name": "@unitrack/conformance-kit",
+  "version": "0.1.0",
+  "description": "Framework-agnostic conformance assertions for @unitrack/core plugin contracts \u2014 run them under node --test, a headless-browser harness, or an in-app self-check screen",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@types/node": "^18",
+    "@unitrack/core": "^0.2.0",
+    "typescript": "^5.5.4"
+  }
+}

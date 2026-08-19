@@ -1,0 +1,20 @@
+{
+  "name": "@unitrack/util-fs",
+  "version": "0.1.0",
+  "description": "Small filesystem-path utilities shared across @unitrack packages",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@types/node": "^18",
+    "typescript": "^5.5.4"
+  }
+}

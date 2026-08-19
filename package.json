@@ -2,11 +2,14 @@
   "name": "unitrack",
   "private": true,
   "workspaces": [
-    "packages/*",
+    "packages/core",
+    "packages/shared/*",
+    "packages/plugins/*/*",
     "apps/*"
   ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build:types": "npm run build:types --workspaces --if-present"
   }
 }

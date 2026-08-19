@@ -10,5 +10,5 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["main.js", "preload.mjs"]
+  "include": ["main.js", "preload.mjs", "plugins.js"]
 }

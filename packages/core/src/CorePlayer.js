@@ -40,6 +40,14 @@ export class CorePlayer extends EventEmitter {
   #activeEngine;
   /** @type {Set<import('./types.js').PlaybackEngine>} */
   #boundEngines = new Set();
+  /**
+   * Every (event, handler) pair #bindEngine ever attached to a given
+   * engine, so dispose() can call engine.off() for each of them —
+   * #boundEngines alone only tracked "have we bound this engine," with no
+   * way to actually undo it.
+   * @type {Map<import('./types.js').PlaybackEngine, Array<[string, (payload?: any) => void]>>}
+   */
+  #engineListeners = new Map();
   /** @type {Promise<void>} */
   #operationChain = Promise.resolve();
   /** @type {string | undefined} */
@@ -104,8 +112,12 @@ export class CorePlayer extends EventEmitter {
 
   /**
    * Runs dispose() on every registered SourceProvider and PlaybackEngine,
-   * in parallel. After this resolves, play() requires initializePlugins()
-   * again.
+   * in parallel, and detaches every listener #bindEngine ever attached
+   * (via engine.off()) from every engine it was attached to. After this
+   * resolves, play() requires initializePlugins() again, and a
+   * previously-bound engine will be freshly re-bound (listeners
+   * re-attached) the next time it's used, rather than #bindEngine's
+   * already-bound guard silently skipping it.
    * @returns {Promise<void>}
    */
   async dispose() {
@@ -114,6 +126,13 @@ export class CorePlayer extends EventEmitter {
       ...this.#registry.getPlaybackEngines(),
     ];
     await Promise.all(plugins.map((plugin) => plugin.dispose()));
+    for (const [engine, listeners] of this.#engineListeners) {
+      for (const [event, handler] of listeners) {
+        engine.off(/** @type {any} */ (event), handler);
+      }
+    }
+    this.#engineListeners.clear();
+    this.#boundEngines.clear();
     this.#initialized = false;
   }
 
@@ -151,6 +170,40 @@ export class CorePlayer extends EventEmitter {
       repeatMode: this.queue.getRepeatMode(),
       volume: this.#volume,
     };
+  }
+
+  /**
+   * Checks, without attempting resolution or playback, whether at least
+   * one of a queue item's sources has a currently-registered provider.
+   * Emits 'sourceUnavailable' — { queueItemId, trackId, tokens } — and
+   * returns false when none do (e.g. a queue item restored from a
+   * snapshot whose provider was never re-registered this launch); returns
+   * true otherwise (a registered provider existing doesn't guarantee
+   * resolution will actually succeed — that's still only found out by
+   * attempting it, same as before).
+   *
+   * A host can call this proactively — right after restoreState(), for
+   * every restored queue item — to flag unplayable items before the user
+   * ever presses play, instead of only finding out via an 'error' event
+   * during an actual play() attempt. Nothing in CorePlayer calls this on
+   * its own; like every other capability-adjacent behavior, surfacing
+   * availability eagerly is a host policy choice, not something Core
+   * imposes unprompted.
+   * @param {string} queueItemId
+   * @returns {boolean}
+   */
+  checkSourceAvailability(queueItemId) {
+    const item = this.queue.getItems().find((i) => i.queueItemId === queueItemId);
+    if (!item) return true;
+    const registeredIds = new Set(this.#registry.getSourceProviders().map((p) => p.id));
+    const hasRegisteredProvider = item.track.sources.some((ref) => registeredIds.has(ref.pluginId));
+    if (hasRegisteredProvider) return true;
+    this.emit('sourceUnavailable', {
+      queueItemId,
+      trackId: item.track.id,
+      tokens: item.track.sources.map((ref) => ref.token),
+    });
+    return false;
   }
 
   /** @param {import('./types.js').CoreState} snapshot @returns {Promise<void>} */
@@ -511,9 +564,22 @@ export class CorePlayer extends EventEmitter {
     if (this.#boundEngines.has(engine)) return;
     this.#boundEngines.add(engine);
 
+    /** @type {Array<[string, (payload?: any) => void]>} */
+    const listeners = [];
+    this.#engineListeners.set(engine, listeners);
+    /**
+     * @param {string} event
+     * @param {(payload?: any) => void} handler
+     * @returns {void}
+     */
+    const bind = (event, handler) => {
+      engine.on(/** @type {any} */ (event), handler);
+      listeners.push([event, handler]);
+    };
+
     const POSITION_THROTTLE_MS = 250;
     let lastEmit = 0;
-    engine.on('progress', (payload) => {
+    bind('progress', (payload) => {
       const { position = 0, duration = 0 } = payload ?? {};
       this.#position = position;
       this.#duration = duration;
@@ -540,28 +606,36 @@ export class CorePlayer extends EventEmitter {
     // repeat/shuffle-aware queue.moveNext() call is the right thing to run
     // either way, and an engine-owned engine doesn't need — and must not
     // build — a second, separate "what's next" implementation of its own.
-    engine.on('ended', () => {
+    bind('ended', () => {
       this.#enqueue(() => this.#advanceOnEnded()).catch((err) => {
         this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
       });
     });
     if (engine.capabilities.queueAuthority === 'engine') {
-      engine.on('trackChanged', (payload) => {
+      bind('trackChanged', (payload) => {
         this.#enqueue(() => this.#reconcileEngineOwnedTrackChange(payload)).catch((err) => {
           this.#emitError(this.queue.getCurrentItem(), err instanceof Error ? err.message : String(err));
         });
       });
     }
 
-    engine.on('error', (error) => {
+    bind('error', (error) => {
       this.#emitError(this.queue.getCurrentItem(), error instanceof Error ? error.message : String(error));
     });
+
+    // 'transportCommand' (a lock-screen/CarPlay/Android-Auto button press,
+    // on a nowPlaying-capable engine) is deliberately NOT bound here —
+    // translating it into play()/pause()/next()/prev() is host policy, the
+    // same way capabilities never drive routing decisions on their own
+    // beyond requiresRevalidation and queueAuthority. A host that wants
+    // this wires engine.on('transportCommand', ...) itself, directly
+    // against the engine instance it already holds a reference to.
   }
 
   /**
    * @param {import('./types.js').QueueItem | undefined} queueItem
    * @param {string} reason
-   * @param {Array<{ pluginId: string, sourceId: string, reason: string }>} [failedSources]
+   * @param {Array<{ pluginId: string, token: import('./types.js').SourceToken, reason: string }>} [failedSources]
    * @returns {void}
    */
   #emitError(queueItem, reason, failedSources = []) {

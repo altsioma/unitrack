@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createLocalFileMetadataProvider } from '@unitrack/metadata-local-fs';
+import { createLocalFileMetadataProvider } from './plugins.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

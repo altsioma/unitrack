@@ -1,3 +1,5 @@
+import { CONTRACT_VERSION } from '../../src/types.js';
+
 /**
  * @param {{
  *   id: string,
@@ -5,7 +7,7 @@
  *   resolveImpl: (ref: import('../../src/types.js').SourceRef) => Promise<import('../../src/types.js').ResolvedSource>,
  *   canResolveImpl?: (ref: import('../../src/types.js').SourceRef) => boolean,
  *   capabilities?: import('../../src/types.js').SourceProviderCapabilities,
- *   revalidateImpl?: (ref: import('../../src/types.js').SourceRef) => Promise<import('../../src/types.js').RevalidationResult>,
+ *   revalidateImpl?: (token: import('../../src/types.js').SourceToken) => Promise<import('../../src/types.js').RevalidationResult>,
  * }} config
  * @returns {import('../../src/types.js').SourceProvider}
  */
@@ -17,6 +19,7 @@ export function createMockSourceProvider({
   return {
     id,
     kind,
+    contractVersion: CONTRACT_VERSION,
     capabilities,
     async initialize(ctx) {},
     async dispose() {},
@@ -24,8 +27,8 @@ export function createMockSourceProvider({
       return (canResolveImpl ?? (() => true))(ref);
     },
     resolve: resolveImpl,
-    async revalidate(ref) {
-      if (revalidateImpl) return revalidateImpl(ref);
+    async revalidate(token) {
+      if (revalidateImpl) return revalidateImpl(token);
       return { valid: false, reason: 'mock provider does not support revalidation' };
     },
   };
@@ -49,6 +52,7 @@ export function createMockPlaybackEngine({
   const listeners = new Map();
   const engine = {
     id: id ?? 'mock-engine',
+    contractVersion: CONTRACT_VERSION,
     capabilities,
     async initialize(ctx) {},
     async dispose() {},
@@ -62,7 +66,7 @@ export function createMockPlaybackEngine({
     seekCalls: [],
     volume: 1,
     volumeCalls: [],
-    plan: /** @type {import('../../src/types.js').PlaybackPlanEntry[] | null} */ (null),
+    plan: null,
     async load(resolved) { this.loaded = resolved; },
     async play() { this.playCalls += 1; },
     async pause() { this.pauseCalls += 1; },
@@ -74,6 +78,9 @@ export function createMockPlaybackEngine({
     on(event, handler) {
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event).add(handler);
+    },
+    off(event, handler) {
+      listeners.get(event)?.delete(handler);
     },
     _simulate(event, payload) {
       for (const handler of listeners.get(event) ?? []) handler(payload);

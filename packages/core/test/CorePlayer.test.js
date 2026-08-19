@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CorePlayer, PluginsNotInitializedError } from '../src/CorePlayer.js';
+import { CONTRACT_VERSION } from '../src/types.js';
 import { createMockSourceProvider, createMockPlaybackEngine } from './helpers/mockPlugins.js';
 import { makeTrack } from './helpers/fixtures.js';
 
 test('registerSourceProvider delegates to the internal registry (duplicate id throws)', () => {
   const core = new CorePlayer();
-  const provider = createMockSourceProvider({ id: 'local-fs', kind: 'local', resolveImpl: async () => ({ url: 'x' }) });
+  const provider = createMockSourceProvider({ id: 'local-fs', kind: 'local', resolveImpl: async () => ({ kind: 'url', url: 'x', mime: 'audio/flac' }) });
   core.registerSourceProvider(provider);
   assert.throws(() => core.registerSourceProvider(provider), /already registered/);
 });
@@ -20,8 +21,8 @@ test('registerPlaybackEngine delegates to the internal registry (duplicate id th
 
 test('registerMetadataProvider and registerPlaylistProvider delegate without throwing', () => {
   const core = new CorePlayer();
-  assert.doesNotThrow(() => core.registerMetadataProvider({ id: 'mb', search: async () => [] }));
-  assert.doesNotThrow(() => core.registerPlaylistProvider({ id: 'local', fetchPlaylist: async () => [] }));
+  assert.doesNotThrow(() => core.registerMetadataProvider({ id: 'mb', contractVersion: CONTRACT_VERSION, search: async () => [] }));
+  assert.doesNotThrow(() => core.registerPlaylistProvider({ id: 'local', contractVersion: CONTRACT_VERSION, fetchPlaylist: async () => [] }));
 });
 
 test('queue mutations emit queueChanged on the core instance', () => {
@@ -74,14 +75,14 @@ test('restoreState with no current item leaves the queue unselected', async () =
 });
 
 function trackWithLocalSource(id, sourceId = `${id}-src`) {
-  return makeTrack(id, [{ pluginId: 'local-fs', sourceId, kind: 'local' }]);
+  return makeTrack(id, [{ pluginId: 'local-fs', token: { pluginId: 'local-fs', token: sourceId }, kind: 'local' }]);
 }
 
 test('play resolves the current track and starts the engine', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -96,7 +97,7 @@ test('play resolves the current track and starts the engine', async () => {
   await core.play();
 
   assert.equal(core.getState().status, 'playing');
-  assert.deepEqual(engine.loaded, { url: 'file:///a.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' });
   assert.equal(engine.playCalls, 1);
   assert.equal(trackChanged.length, 1);
   assert.equal(trackChanged[0].track.id, 't1');
@@ -129,7 +130,7 @@ test('play emits an error and stops when resolution fails for every source', asy
   assert.equal(errors.length, 1);
   assert.equal(errors[0].trackId, 't1');
   assert.deepEqual(errors[0].failedSources, [
-    { pluginId: 'local-fs', sourceId: 't1-src', reason: 'file missing' },
+    { pluginId: 'local-fs', token: { pluginId: 'local-fs', token: 't1-src' }, reason: 'file missing' },
   ]);
 });
 
@@ -137,7 +138,7 @@ test('play emits an error when no registered engine can play the resolved source
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio', canPlayImpl: () => false });
   core.registerSourceProvider(provider);
@@ -159,7 +160,7 @@ test('a throwing canPlay() surfaces as an error event instead of leaving status 
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({
     id: 'web-audio',
@@ -186,7 +187,7 @@ test('pause and resume do not re-resolve or reload the track', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -209,7 +210,7 @@ test('stop resets status and position without clearing the queue', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -232,7 +233,7 @@ test('next loads and plays the following queue item', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -245,14 +246,14 @@ test('next loads and plays the following queue item', async () => {
   await core.next();
 
   assert.equal(core.getState().currentQueueItem.track.id, 't2');
-  assert.deepEqual(engine.loaded, { url: 'file:///l2.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l2.flac', mime: 'audio/flac' });
 });
 
 test('next is a no-op at the end of the queue', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -272,7 +273,7 @@ test('prev loads and plays the preceding queue item', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -286,7 +287,7 @@ test('prev loads and plays the preceding queue item', async () => {
   await core.prev();
 
   assert.equal(core.getState().currentQueueItem.track.id, 't1');
-  assert.deepEqual(engine.loaded, { url: 'file:///l1.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l1.flac', mime: 'audio/flac' });
 });
 
 test('seek delegates to the active engine only once a track is loaded', async () => {
@@ -299,7 +300,7 @@ test('seek delegates to the active engine only once a track is loaded', async ()
 
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   core.registerSourceProvider(provider);
   core.setPolicy([{ kind: 'local' }]);
@@ -314,7 +315,7 @@ test('engine progress events emit a throttled positionChanged', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -338,7 +339,7 @@ test('engine ended event auto-advances to the next queue item', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -358,7 +359,7 @@ test('engine ended event sets status to idle when the queue is finished', async 
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -378,7 +379,7 @@ test('engine error event during playback stops and emits error', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -402,7 +403,7 @@ test('an engine error that arrives mid-load does not permanently disable reconci
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   let releaseLoad;
@@ -437,7 +438,7 @@ test('an engine load/play failure is caught and surfaced as an error event, not 
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   engine.play = async () => { throw new Error('device busy'); };
@@ -462,7 +463,7 @@ test('a resume failure (engine.play() rejecting from paused) is caught and surfa
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -492,7 +493,7 @@ test('rebinding a previously-used playback engine does not register duplicate li
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engineA = createMockPlaybackEngine({ id: 'engine-a', canPlayImpl: (resolved) => resolved.url.includes('l1') });
   const engineB = createMockPlaybackEngine({ id: 'engine-b', canPlayImpl: (resolved) => resolved.url.includes('l2') });
@@ -525,10 +526,10 @@ test('concurrent next() calls resolve in order rather than racing', async () => 
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
     resolveImpl: async (ref) => {
-      if (ref.sourceId === 'l2') {
+      if (ref.token.token === 'l2') {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      return { url: `file:///${ref.sourceId}.flac` };
+      return { kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' };
     },
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
@@ -549,7 +550,7 @@ test('concurrent next() calls resolve in order rather than racing', async () => 
   await Promise.all([core.next(), core.next()]);
 
   assert.equal(core.getState().currentQueueItem.track.id, 't3');
-  assert.deepEqual(engine.loaded, { url: 'file:///l3.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l3.flac', mime: 'audio/flac' });
   assert.deepEqual(trackChanged, ['t2', 't3']);
 });
 
@@ -557,7 +558,7 @@ test('pause() issued during an in-flight play() still ends up paused', async () 
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -579,7 +580,7 @@ test('removing the currently-playing item stops playback and returns to idle', a
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -601,7 +602,7 @@ test('clearing the queue during playback stops playback and returns to idle', as
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -622,7 +623,7 @@ test('reordering the queue during playback does not interrupt it', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -644,7 +645,7 @@ test('a direct queue.setCurrentIndex() pointer jump does not interrupt playback'
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -665,7 +666,7 @@ test('play() after queue.setCurrentIndex() to a different item while already pla
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -680,14 +681,14 @@ test('play() after queue.setCurrentIndex() to a different item while already pla
 
   assert.equal(core.getState().status, 'playing');
   assert.equal(core.getState().currentQueueItem.track.id, 't2');
-  assert.deepEqual(engine.loaded, { url: 'file:///l2.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l2.flac', mime: 'audio/flac' });
 });
 
 test('play() after queue.setCurrentIndex() to a different item while paused loads and plays the new item, not the old one', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -703,14 +704,14 @@ test('play() after queue.setCurrentIndex() to a different item while paused load
 
   assert.equal(core.getState().status, 'playing');
   assert.equal(core.getState().currentQueueItem.track.id, 't2');
-  assert.deepEqual(engine.loaded, { url: 'file:///l2.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l2.flac', mime: 'audio/flac' });
 });
 
 test('play() with no queue-item change while already playing stays a no-op (regression guard)', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -732,7 +733,7 @@ test('normal next() navigation is unaffected by reconciliation', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -753,7 +754,7 @@ test('restoreState on an already-active instance does not leave a stale loaded-i
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -786,7 +787,7 @@ test('restoreState() stops the active engine', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -809,7 +810,7 @@ test('restoreState() is serialized against an in-flight play()', async () => {
     id: 'local-fs', kind: 'local',
     resolveImpl: async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
-      return { url: 'file:///a.flac' };
+      return { kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' };
     },
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
@@ -838,7 +839,7 @@ test('restoreState() does not trigger a spurious reconciliation stop during the 
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -869,7 +870,7 @@ test('repeat "one": the engine ending naturally replays the same queue item inst
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -890,7 +891,7 @@ test('repeat "one": the engine ending naturally replays the same queue item inst
   assert.equal(core.queue.getCurrentIndex(), beforeIndex);
   assert.equal(core.getState().currentQueueItem.queueItemId, beforeItemId);
   assert.equal(core.getState().currentQueueItem.track.id, 't1');
-  assert.deepEqual(engine.loaded, { url: 'file:///l1.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l1.flac', mime: 'audio/flac' });
   assert.ok(engine.playCalls > loadCallsBefore);
   assert.equal(core.getState().status, 'playing');
 });
@@ -899,7 +900,7 @@ test('repeat "one" does not block a manual next() from moving to a different tra
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -913,7 +914,7 @@ test('repeat "one" does not block a manual next() from moving to a different tra
   await core.next();
 
   assert.equal(core.getState().currentQueueItem.track.id, 't2');
-  assert.deepEqual(engine.loaded, { url: 'file:///l2.flac' });
+  assert.deepEqual(engine.loaded, { kind: 'url', url: 'file:///l2.flac', mime: 'audio/flac' });
 });
 
 test('getState reflects shuffle and repeatMode; restoreState round-trips them', async () => {
@@ -950,7 +951,7 @@ test('repeat "one": if setCurrentIndex(-1) clears the current item before "ended
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -1000,7 +1001,7 @@ test('setVolume(NaN) does not propagate to the active engine', async () => {
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -1021,7 +1022,7 @@ test('setVolume while a track is loaded calls the active engine\'s setVolume imm
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -1041,7 +1042,7 @@ test('a volume set before playback starts is applied to the engine once a track 
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -1062,7 +1063,7 @@ test('volume set on one track carries over when moving to the next track', async
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
   core.registerSourceProvider(provider);
@@ -1108,7 +1109,7 @@ test('play() throws PluginsNotInitializedError before initializePlugins() has be
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   core.registerSourceProvider(provider);
   core.registerPlaybackEngine(createMockPlaybackEngine({ id: 'web-audio' }));
@@ -1126,7 +1127,7 @@ test('initializePlugins() calls initialize() on every registered source provider
   const initCalls = [];
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   provider.initialize = async (ctx) => { initCalls.push(['provider', ctx]); };
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
@@ -1151,7 +1152,7 @@ test('dispose() calls dispose() on every registered source provider and playback
   const disposeCalls = [];
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async () => ({ url: 'file:///a.flac' }),
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
   });
   provider.dispose = async () => { disposeCalls.push('provider'); };
   const engine = createMockPlaybackEngine({ id: 'web-audio' });
@@ -1175,7 +1176,7 @@ test('a queueAuthority: "engine" engine receives a lookahead plan via setPlaybac
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
@@ -1206,7 +1207,7 @@ test('a queueAuthority: "engine" engine\'s genuine "ended" (no more plan to hand
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
@@ -1236,7 +1237,7 @@ test('a queueAuthority: "engine" engine\'s "trackChanged" event reconciles Core\
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
@@ -1265,7 +1266,7 @@ test('queue mutations refresh the lookahead plan of an active queueAuthority: "e
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
@@ -1290,7 +1291,7 @@ test('repeat: "one" pads a queueAuthority: "engine" engine\'s lookahead plan wit
   const core = new CorePlayer();
   const provider = createMockSourceProvider({
     id: 'local-fs', kind: 'local',
-    resolveImpl: async (ref) => ({ url: `file:///${ref.sourceId}.flac` }),
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
   });
   const engine = createMockPlaybackEngine({
     id: 'gapless-engine',
@@ -1312,4 +1313,65 @@ test('repeat: "one" pads a queueAuthority: "engine" engine\'s lookahead plan wit
   // engine's own internal auto-advance just replays it.
   assert.equal(engine.plan.length, 3);
   assert.ok(engine.plan.every((p) => p.queueItemId === first.queueItemId));
+});
+
+test('dispose() detaches every listener #bindEngine ever attached, via engine.off()', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async (ref) => ({ kind: 'url', url: `file:///${ref.token.token}.flac`, mime: 'audio/flac' }),
+  });
+  const engine = createMockPlaybackEngine({ id: 'web-audio' });
+  core.registerSourceProvider(provider);
+  core.registerPlaybackEngine(engine);
+  core.setPolicy([{ kind: 'local' }]);
+  core.queue.add(trackWithLocalSource('t1', 'l1'));
+  await core.initializePlugins({});
+  await core.play();
+
+  assert.ok(engine._listenerCount('progress') > 0);
+  assert.ok(engine._listenerCount('ended') > 0);
+  assert.ok(engine._listenerCount('error') > 0);
+
+  await core.dispose();
+
+  assert.equal(engine._listenerCount('progress'), 0);
+  assert.equal(engine._listenerCount('ended'), 0);
+  assert.equal(engine._listenerCount('error'), 0);
+});
+
+test('checkSourceAvailability returns true and emits nothing when a queue item has a registered provider', async () => {
+  const core = new CorePlayer();
+  const provider = createMockSourceProvider({
+    id: 'local-fs', kind: 'local',
+    resolveImpl: async () => ({ kind: 'url', url: 'file:///a.flac', mime: 'audio/flac' }),
+  });
+  core.registerSourceProvider(provider);
+  const [item] = core.queue.add(trackWithLocalSource('t1', 'l1'));
+
+  let emitted = false;
+  core.on('sourceUnavailable', () => { emitted = true; });
+
+  assert.equal(core.checkSourceAvailability(item.queueItemId), true);
+  assert.equal(emitted, false);
+});
+
+test('checkSourceAvailability returns false and emits sourceUnavailable when no provider is registered for a queue item\'s sources', async () => {
+  const core = new CorePlayer();
+  const [item] = core.queue.add(trackWithLocalSource('t1', 'l1'));
+
+  let payload;
+  core.on('sourceUnavailable', (p) => { payload = p; });
+
+  assert.equal(core.checkSourceAvailability(item.queueItemId), false);
+  assert.deepEqual(payload, {
+    queueItemId: item.queueItemId,
+    trackId: 't1',
+    tokens: [{ pluginId: 'local-fs', token: 'l1' }],
+  });
+});
+
+test('checkSourceAvailability returns true for a queueItemId that no longer exists in the queue', () => {
+  const core = new CorePlayer();
+  assert.equal(core.checkSourceAvailability('missing-item'), true);
 });

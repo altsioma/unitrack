@@ -1,8 +1,10 @@
 import { ipcRenderer } from 'electron';
 import { CorePlayer } from '@unitrack/core';
-import { createLocalFileSourceProvider } from '@unitrack/source-local-fs';
-import { createWebAudioPlaybackEngine } from '@unitrack/engine-web-audio';
-import { createLocalFolderPlaylistProvider } from '@unitrack/playlist-local-fs';
+import {
+  createLocalFileSourceProvider,
+  createWebAudioPlaybackEngine,
+  createLocalFolderPlaylistProvider,
+} from './plugins.js';
 
 /**
  * @param {string} id
@@ -339,7 +341,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     core.queue.add({
       id: filePath,
       metadata: { artist: '', album: '', title },
-      sources: [{ pluginId: 'local-fs', sourceId: filePath, kind: 'local' }],
+      sources: [{ pluginId: 'local-fs', token: { pluginId: 'local-fs', token: filePath }, kind: 'local' }],
     });
     log('ui', 'Open File: track appended', { title });
     await autoPlayIfEnabled();
@@ -373,7 +375,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       // provider's filename-derived placeholder metadata rather than
       // failing the whole folder-open.
       if (!result?.ok) {
-        log('ui', `tags unavailable, keeping filename for ${sourceRef.sourceId}`, result?.error);
+        log('ui', `tags unavailable, keeping filename for ${sourceRef.token.token}`, result?.error);
         return track;
       }
       return { ...track, metadata: { ...track.metadata, ...result.metadata } };

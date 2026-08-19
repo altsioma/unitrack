@@ -1,0 +1,21 @@
+{
+  "name": "@unitrack/engine-audio-queue",
+  "version": "0.1.0",
+  "description": "Chained-HTMLAudioElement Playback Engine plugin for @unitrack/core \u2014 the first queueAuthority: 'engine' implementation",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@unitrack/conformance-kit": "^0.1.0",
+    "@unitrack/core": "^0.2.0",
+    "typescript": "^5.5.4"
+  }
+}

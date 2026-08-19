@@ -4,7 +4,7 @@
 export class TrackResolutionError extends Error {
   /**
    * @param {string} trackId
-   * @param {Array<{ pluginId: string, sourceId: string, reason: string }>} failedSources
+   * @param {Array<{ pluginId: string, token: import('./types.js').SourceToken, reason: string }>} failedSources
    */
   constructor(trackId, failedSources) {
     super(`Failed to resolve track ${trackId}`);
@@ -21,7 +21,7 @@ export class TrackResolutionError extends Error {
  * @returns {Promise<import('./types.js').ResolvedSource>}
  */
 export async function resolveTrack(track, policy, providers) {
-  /** @type {Array<{ pluginId: string, sourceId: string, reason: string }>} */
+  /** @type {Array<{ pluginId: string, token: import('./types.js').SourceToken, reason: string }>} */
   const failedSources = [];
 
   for (const rule of policy) {
@@ -33,11 +33,11 @@ export async function resolveTrack(track, policy, providers) {
     for (const ref of matchingRefs) {
       const provider = providers.find((p) => p.id === ref.pluginId);
       if (!provider) {
-        failedSources.push({ pluginId: ref.pluginId, sourceId: ref.sourceId, reason: 'no provider registered for pluginId' });
+        failedSources.push({ pluginId: ref.pluginId, token: ref.token, reason: 'no provider registered for pluginId' });
         continue;
       }
       if (!(await provider.canResolve(ref))) {
-        failedSources.push({ pluginId: ref.pluginId, sourceId: ref.sourceId, reason: 'provider cannot resolve this source' });
+        failedSources.push({ pluginId: ref.pluginId, token: ref.token, reason: 'provider cannot resolve this source' });
         continue;
       }
       try {
@@ -47,19 +47,22 @@ export async function resolveTrack(track, policy, providers) {
         // A provider whose capabilities advertise requiresRevalidation gets
         // one retry via revalidate() before this source counts as failed —
         // covers cases like an expired signed URL or a moved file, where a
-        // freshly-revalidated ref might succeed where the first attempt
-        // didn't.
+        // freshly-revalidated token might succeed where the first attempt
+        // didn't. revalidate() takes just the token (not the whole ref) —
+        // see the v0.3.0 design spec's Solution — so a fresh ref is
+        // reassembled around the revalidated token before retrying.
         if (provider.capabilities?.requiresRevalidation) {
-          const revalidation = await provider.revalidate(ref).catch(() =>
+          const revalidation = await provider.revalidate(ref.token).catch(() =>
             /** @type {import('./types.js').RevalidationResult} */ ({ valid: false })
           );
-          if (revalidation.valid && revalidation.ref) {
+          if (revalidation.valid && revalidation.token) {
+            const revalidatedRef = { ...ref, token: revalidation.token };
             try {
-              return await provider.resolve(revalidation.ref);
+              return await provider.resolve(revalidatedRef);
             } catch (retryErr) {
               failedSources.push({
                 pluginId: ref.pluginId,
-                sourceId: ref.sourceId,
+                token: ref.token,
                 reason: retryErr instanceof Error ? retryErr.message : String(retryErr),
               });
               continue;
@@ -67,12 +70,12 @@ export async function resolveTrack(track, policy, providers) {
           }
           failedSources.push({
             pluginId: ref.pluginId,
-            sourceId: ref.sourceId,
+            token: ref.token,
             reason: originalReason || revalidation.reason || 'resolution failed',
           });
           continue;
         }
-        failedSources.push({ pluginId: ref.pluginId, sourceId: ref.sourceId, reason: originalReason });
+        failedSources.push({ pluginId: ref.pluginId, token: ref.token, reason: originalReason });
       }
     }
   }
