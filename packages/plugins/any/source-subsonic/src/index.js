@@ -6,11 +6,25 @@ const API_VERSION = '1.16.1';
 // stream.view?format=raw returns whatever format the file is actually
 // stored in on the server — Subsonic's ping/stream API gives no way to
 // learn that ahead of time without a separate getSong.view metadata call
-// this provider doesn't make. 'application/octet-stream' documents "we
-// don't know", the same fallback @unitrack/source-local-fs uses for an
-// unrecognized file extension, rather than guessing a specific audio mime
-// that might be wrong.
-const UNKNOWN_MIME = 'application/octet-stream';
+// this provider doesn't make.
+//
+// Deliberately '', not a placeholder MIME string like
+// 'application/octet-stream' (which @unitrack/source-local-fs falls back
+// to for an unrecognized file extension). Both @unitrack/engine-web-audio
+// and @unitrack/engine-audio-queue's canPlay() only treat a *falsy*
+// resolved.mime as "unknown, be permissive" (`if (!resolved.mime) return
+// true`) — a non-empty placeholder string is checked literally via
+// `audio.canPlayType(resolved.mime)`, and every browser reports
+// canPlayType('application/octet-stream') === '' (verified directly:
+// Chromium reports 'probably'/'maybe' for real audio MIME types like
+// audio/mpeg or audio/ogg, but '' for that generic placeholder) — so a
+// provider that always returns that specific placeholder, as this one
+// used to, is silently never playable through either engine. Caught only
+// once this provider was actually wired into a real host with a real
+// engine end-to-end (@unitrack/web-demo) for the first time; this
+// provider's own design spec had explicitly deferred "demo wiring" as
+// out of scope, which is exactly why it went unnoticed until now.
+const UNKNOWN_MIME = '';
 
 /**
  * @param {string} password

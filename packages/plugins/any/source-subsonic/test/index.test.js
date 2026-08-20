@@ -52,7 +52,10 @@ test('resolve() against a healthy server returns a correctly-signed stream.view 
     assert.equal(url.searchParams.get('c'), 'unitrack-test');
     assert.equal(url.searchParams.get('id'), 'track-42');
     assert.equal(url.searchParams.get('format'), 'raw');
-    assert.equal(resolved.mime, 'application/octet-stream');
+    // '' (not a placeholder string) — see src/index.js's UNKNOWN_MIME
+    // comment: only a falsy mime is treated as "unknown, be permissive" by
+    // engine-web-audio/engine-audio-queue's canPlay().
+    assert.equal(resolved.mime, '');
     const salt = url.searchParams.get('s');
     const token = url.searchParams.get('t');
     assert.equal(token, createHash('md5').update('sesame' + salt, 'utf8').digest('hex'));
