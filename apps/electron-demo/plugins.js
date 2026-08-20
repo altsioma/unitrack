@@ -24,6 +24,9 @@
 // factory, right where it's registered.
 
 import { createLocalFileSourceProvider } from '@unitrack/source-local-fs';
+import { createSubsonicSourceProvider } from '@unitrack/source-subsonic';
+import { createS3SourceProvider } from '@unitrack/source-s3';
+import { createDirectUrlSourceProvider } from '@unitrack/source-direct-url';
 import { createWebAudioPlaybackEngine } from '@unitrack/engine-web-audio';
 import { createLocalFolderPlaylistProvider } from '@unitrack/playlist-local-fs';
 import { createLocalFileMetadataProvider } from '@unitrack/metadata-local-fs';
@@ -38,6 +41,9 @@ import { createLocalFileMetadataProvider } from '@unitrack/metadata-local-fs';
 /** @type {PluginManifestEntry[]} */
 export const PLUGIN_MANIFEST = [
   { category: 'source', packageName: '@unitrack/source-local-fs', process: 'preload' },
+  { category: 'source', packageName: '@unitrack/source-subsonic', process: 'preload' },
+  { category: 'source', packageName: '@unitrack/source-s3', process: 'preload' },
+  { category: 'source', packageName: '@unitrack/source-direct-url', process: 'preload' },
   { category: 'engine', packageName: '@unitrack/engine-web-audio', process: 'preload' },
   { category: 'playlist', packageName: '@unitrack/playlist-local-fs', process: 'preload' },
   { category: 'metadata', packageName: '@unitrack/metadata-local-fs', process: 'main' },
@@ -47,6 +53,9 @@ export const PLUGIN_MANIFEST = [
 // factories) relevant to their own process from this one module.
 export {
   createLocalFileSourceProvider,
+  createSubsonicSourceProvider,
+  createS3SourceProvider,
+  createDirectUrlSourceProvider,
   createWebAudioPlaybackEngine,
   createLocalFolderPlaylistProvider,
   createLocalFileMetadataProvider,
