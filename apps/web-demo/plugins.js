@@ -5,6 +5,7 @@
 
 import { createSubsonicSourceProvider } from '@unitrack/source-subsonic';
 import { createS3SourceProvider } from '@unitrack/source-s3';
+import { createDirectUrlSourceProvider } from '@unitrack/source-direct-url';
 import { createAudioQueuePlaybackEngine } from '@unitrack/engine-audio-queue';
 
 /**
@@ -17,7 +18,13 @@ import { createAudioQueuePlaybackEngine } from '@unitrack/engine-audio-queue';
 export const PLUGIN_MANIFEST = [
   { category: 'source', packageName: '@unitrack/source-subsonic' },
   { category: 'source', packageName: '@unitrack/source-s3' },
+  { category: 'source', packageName: '@unitrack/source-direct-url' },
   { category: 'engine', packageName: '@unitrack/engine-audio-queue' },
 ];
 
-export { createSubsonicSourceProvider, createS3SourceProvider, createAudioQueuePlaybackEngine };
+export {
+  createSubsonicSourceProvider,
+  createS3SourceProvider,
+  createDirectUrlSourceProvider,
+  createAudioQueuePlaybackEngine,
+};

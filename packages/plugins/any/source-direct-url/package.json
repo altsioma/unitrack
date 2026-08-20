@@ -1,0 +1,27 @@
+{
+  "name": "@unitrack/source-direct-url",
+  "version": "0.1.0",
+  "description": "Plain-URL Source Provider plugin for @unitrack/core. SourceRef.token.token is a complete, directly-fetchable URL — no auth, no factory config. Pure fetch — no Node-specific API, works everywhere.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@types/node": "^18",
+    "@unitrack/conformance-kit": "^0.1.0",
+    "@unitrack/core": "^0.2.0",
+    "typescript": "^5.5.4"
+  }
+}

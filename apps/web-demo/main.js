@@ -2,6 +2,7 @@ import { CorePlayer } from '@unitrack/core';
 import {
   createSubsonicSourceProvider,
   createS3SourceProvider,
+  createDirectUrlSourceProvider,
   createAudioQueuePlaybackEngine,
 } from './plugins.js';
 
@@ -87,6 +88,12 @@ core.setPolicy([{}]);
 core.registerPlaybackEngine(createAudioQueuePlaybackEngine());
 log('main', 'engine-audio-queue registered');
 
+// Unlike Subsonic/S3, this provider takes no config at all — the
+// SourceRef.token.token a caller supplies already is the complete URL —
+// so there's no connection form for it; it's simply always available.
+core.registerSourceProvider(createDirectUrlSourceProvider());
+log('main', 'direct-url provider registered');
+
 /**
  * core.initializePlugins() must run before the first play() (v0.4
  * contract — see PluginsNotInitializedError), and is safe to call again
@@ -171,7 +178,11 @@ requireElement('add-track').addEventListener('click', async () => {
     return;
   }
 
-  const kindFor = (/** @type {string} */ pluginId) => (pluginId === 'subsonic' ? 'self-hosted' : 'object-storage');
+  const kindFor = (/** @type {string} */ pluginId) => {
+    if (pluginId === 'subsonic') return 'self-hosted';
+    if (pluginId === 's3') return 'object-storage';
+    return 'direct-url';
+  };
 
   /** @type {import('@unitrack/core/types').SourceRef[]} */
   const sources = [

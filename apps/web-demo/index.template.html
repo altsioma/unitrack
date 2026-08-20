@@ -52,8 +52,9 @@
       <select id="primary-provider">
         <option value="subsonic">Subsonic</option>
         <option value="s3">S3</option>
+        <option value="direct-url">Direct URL</option>
       </select>
-      <input type="text" id="primary-key" placeholder="track id / object key">
+      <input type="text" id="primary-key" placeholder="track id / object key / URL">
     </div>
     <div class="row">
       <label for="fallback-provider">Fallback (optional)</label>
@@ -61,8 +62,9 @@
         <option value="">none</option>
         <option value="subsonic">Subsonic</option>
         <option value="s3">S3</option>
+        <option value="direct-url">Direct URL</option>
       </select>
-      <input type="text" id="fallback-key" placeholder="track id / object key">
+      <input type="text" id="fallback-key" placeholder="track id / object key / URL">
     </div>
     <button id="add-track">Add Track</button>
   </fieldset>

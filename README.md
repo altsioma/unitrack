@@ -63,6 +63,7 @@ first such manifest.
 | [`@unitrack/engine-audio-queue`](packages/plugins/web/engine-audio-queue) | `PlaybackEngine` built on two chained `<audio>` elements, pre-buffering the next track for a gapless hand-off. `lookaheadPlayback: true` — accepts a revisioned `PlaybackPlan` via `setPlaybackPlan()`. Browser/Electron. |
 | [`@unitrack/source-subsonic`](packages/plugins/any/source-subsonic) | `SourceProvider` for a self-hosted Subsonic-API server. Pure `fetch` + a dependency-free MD5 — no Node-specific API, works everywhere. |
 | [`@unitrack/source-s3`](packages/plugins/any/source-s3) | `SourceProvider` for an S3-compatible object storage bucket (AWS S3, MinIO, ...). Pure `fetch` + Web Crypto SigV4 presigning — no Node-specific API, works everywhere. |
+| [`@unitrack/source-direct-url`](packages/plugins/any/source-direct-url) | `SourceProvider` for a plain, already-complete, directly-fetchable URL — no auth, no factory config. `SourceRef.token.token` *is* the URL. |
 | [`@unitrack/electron-demo`](apps/electron-demo) | Minimal Electron host — the first end-to-end proof the pipeline produces audible sound. |
 | [`@unitrack/web-demo`](apps/web-demo) | Minimal browser-only host — no Electron, no bundler. Plugins are served via an import map generated from each package's own `package.json.exports`. Proves the `any`/`web`-tier plugin set runs with zero Node APIs, and is the first host to register two networked `SourceProvider`s at once (a live `Resolver.js` policy-fallback demo). |
 

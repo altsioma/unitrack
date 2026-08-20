@@ -12,6 +12,7 @@
     "@unitrack/core": "^0.2.0",
     "@unitrack/source-subsonic": "^0.2.0",
     "@unitrack/source-s3": "^0.1.0",
+    "@unitrack/source-direct-url": "^0.1.0",
     "@unitrack/engine-audio-queue": "^0.1.0"
   },
   "devDependencies": {
