@@ -2,6 +2,9 @@ import { ipcRenderer } from 'electron';
 import { CorePlayer } from '@unitrack/core';
 import {
   createLocalFileSourceProvider,
+  createSubsonicSourceProvider,
+  createS3SourceProvider,
+  createDirectUrlSourceProvider,
   createWebAudioPlaybackEngine,
   createLocalFolderPlaylistProvider,
 } from './plugins.js';
@@ -23,6 +26,16 @@ function requireElement(id) {
 function requireInputElement(id) {
   const el = requireElement(id);
   if (!(el instanceof HTMLInputElement)) throw new Error(`#${id} is not an <input>`);
+  return el;
+}
+
+/**
+ * @param {string} id
+ * @returns {HTMLSelectElement}
+ */
+function requireSelectElement(id) {
+  const el = requireElement(id);
+  if (!(el instanceof HTMLSelectElement)) throw new Error(`#${id} is not a <select>`);
   return el;
 }
 
@@ -148,19 +161,46 @@ window.addEventListener('DOMContentLoaded', async () => {
   log('renderer', 'config', config);
   const core = new CorePlayer();
   core.registerSourceProvider(createLocalFileSourceProvider());
+  // Unlike Subsonic/S3, this provider takes no config at all — the
+  // SourceRef.token.token a caller supplies already is the complete URL —
+  // so there's no connection form for it; it's simply always available,
+  // same as @unitrack/web-demo/main.js registers it.
+  core.registerSourceProvider(createDirectUrlSourceProvider());
   core.registerPlaybackEngine(createWebAudioPlaybackEngine());
-  core.setPolicy([{ kind: 'local' }]);
-  log('renderer', 'core constructed; source-local-fs + engine-web-audio registered');
 
-  // v0.2.0 contract: every registered plugin's initialize() must run before
-  // the first play() — CorePlayer.play() throws PluginsNotInitializedError
-  // otherwise. host here is deliberately minimal; nothing in this demo's
-  // plugins reads config or host yet.
-  await core.initializePlugins({
-    log: (scope, message, detail) => log(`core:${scope}`, message, detail),
-    config: {},
-    host: { platform: 'electron', version: process.versions.electron },
-  });
+  // A single catch-all policy rule (no kind/pluginId filter) matches every
+  // SourceRef on a track in the order LogicalTrack.sources lists them.
+  // Open File/Open Folder's sources are all kind 'local' and still match a
+  // catch-all rule fine (there's exactly one source per locally-opened
+  // track, so ordering is moot there); the Add Track form below produces
+  // 'self-hosted'/'object-storage'/'direct-url'-kind sources whose
+  // primary/fallback ordering only becomes meaningful under a catch-all
+  // policy — the previous `[{ kind: 'local' }]` policy would have silently
+  // dropped every source the new form can produce. See design spec's
+  // "Policy change" section and @unitrack/web-demo/main.js, which solves
+  // the identical problem the same way.
+  core.setPolicy([{}]);
+  log('renderer', 'core constructed; source-local-fs + source-direct-url + engine-web-audio registered');
+
+  /**
+   * core.initializePlugins() must run before the first play() (v0.2.0
+   * contract — see PluginsNotInitializedError), and is safe to call again
+   * after a new provider registers: every SourceProvider/PlaybackEngine's
+   * own initialize() in this app's plugin set is either a no-op or
+   * idempotent, and CorePlayer.initializePlugins() itself just re-runs
+   * initialize() on every currently-registered plugin with no state that
+   * would make a second call unsafe.
+   * @returns {Promise<void>}
+   */
+  async function reinitializePlugins() {
+    await core.initializePlugins({
+      log: (scope, message, detail) => log(`core:${scope}`, message, detail),
+      config: {},
+      host: { platform: 'electron', version: process.versions.electron },
+    });
+  }
+
+  await reinitializePlugins();
   log('renderer', 'core.initializePlugins complete');
 
   // The playlist provider stays in the renderer (plain node:fs, no dynamic
@@ -335,6 +375,98 @@ window.addEventListener('DOMContentLoaded', async () => {
     log('renderer', 'UNCAUGHT ERROR', { message: event.message, filename: event.filename, lineno: event.lineno });
     lastErrorText = `unhandled: ${event.error instanceof Error ? event.error.message : String(event.error ?? event.message)}`;
     updateStatus();
+  });
+
+  // --- Connection forms ---------------------------------------------------
+  // Credentials live only in these closures — never written to disk, a
+  // cookie, or IPC'd anywhere beyond the redacted log lines below. Ported
+  // from @unitrack/web-demo/main.js's identical handlers, with
+  // console.log calls replaced by this file's IPC-backed log().
+
+  let subsonicRegistered = false;
+  requireElement('subsonic-connect').addEventListener('click', async () => {
+    const baseUrl = requireInputElement('subsonic-baseurl').value.trim();
+    const username = requireInputElement('subsonic-username').value;
+    const password = requireInputElement('subsonic-password').value;
+    if (!baseUrl || !username || !password) {
+      requireElement('subsonic-status').textContent = 'fill in all fields';
+      return;
+    }
+    if (subsonicRegistered) {
+      requireElement('subsonic-status').textContent = 'already connected (reload to reconnect)';
+      return;
+    }
+    core.registerSourceProvider(createSubsonicSourceProvider({ baseUrl, username, password }));
+    subsonicRegistered = true;
+    await reinitializePlugins();
+    requireElement('subsonic-status').textContent = 'connected';
+    log('ui', 'subsonic provider registered', { baseUrl, username });
+  });
+
+  let s3Registered = false;
+  requireElement('s3-connect').addEventListener('click', async () => {
+    const endpoint = requireInputElement('s3-endpoint').value.trim();
+    const region = requireInputElement('s3-region').value.trim();
+    const bucket = requireInputElement('s3-bucket').value.trim();
+    const accessKeyId = requireInputElement('s3-access-key').value;
+    const secretAccessKey = requireInputElement('s3-secret-key').value;
+    const forcePathStyle = requireInputElement('s3-force-path-style').checked;
+    if (!endpoint || !region || !bucket || !accessKeyId || !secretAccessKey) {
+      requireElement('s3-status').textContent = 'fill in all fields';
+      return;
+    }
+    if (s3Registered) {
+      requireElement('s3-status').textContent = 'already connected (reload to reconnect)';
+      return;
+    }
+    core.registerSourceProvider(createS3SourceProvider({
+      endpoint, region, bucket, accessKeyId, secretAccessKey, forcePathStyle,
+    }));
+    s3Registered = true;
+    await reinitializePlugins();
+    requireElement('s3-status').textContent = 'connected';
+    log('ui', 's3 provider registered', { endpoint, region, bucket, forcePathStyle });
+  });
+
+  // --- Add Track -----------------------------------------------------------
+
+  requireElement('add-track').addEventListener('click', async () => {
+    const title = requireInputElement('track-title').value.trim() || '(untitled)';
+    const primaryProvider = requireSelectElement('primary-provider').value;
+    const primaryKey = requireInputElement('primary-key').value.trim();
+    const fallbackProvider = requireSelectElement('fallback-provider').value;
+    const fallbackKey = requireInputElement('fallback-key').value.trim();
+
+    if (!primaryKey) {
+      log('ui', 'Add Track: primary key is required');
+      return;
+    }
+
+    const kindFor = (/** @type {string} */ pluginId) => {
+      if (pluginId === 'subsonic') return 'self-hosted';
+      if (pluginId === 's3') return 'object-storage';
+      return 'direct-url';
+    };
+
+    /** @type {import('@unitrack/core/types').SourceRef[]} */
+    const sources = [
+      { pluginId: primaryProvider, token: { pluginId: primaryProvider, token: primaryKey }, kind: kindFor(primaryProvider) },
+    ];
+    if (fallbackProvider && fallbackKey) {
+      sources.push({
+        pluginId: fallbackProvider,
+        token: { pluginId: fallbackProvider, token: fallbackKey },
+        kind: kindFor(fallbackProvider),
+      });
+    }
+
+    await core.enqueue({
+      id: crypto.randomUUID(),
+      metadata: { artist: '', album: '', title },
+      sources,
+    });
+    log('ui', 'track added', { title, sources: sources.length });
+    await autoPlayIfEnabled();
   });
 
   requireElement('open-file').addEventListener('click', async () => {

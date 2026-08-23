@@ -12,6 +12,9 @@
   "dependencies": {
     "@unitrack/core": "^0.2.0",
     "@unitrack/source-local-fs": "^0.2.0",
+    "@unitrack/source-subsonic": "^0.2.0",
+    "@unitrack/source-s3": "^0.1.0",
+    "@unitrack/source-direct-url": "^0.1.0",
     "@unitrack/engine-web-audio": "^0.2.0",
     "@unitrack/playlist-local-fs": "^0.2.0",
     "@unitrack/metadata-local-fs": "^0.2.0"

@@ -1,0 +1,27 @@
+{
+  "name": "@unitrack/source-s3",
+  "version": "0.1.0",
+  "description": "S3-compatible object storage Source Provider plugin for @unitrack/core. Pure fetch + Web Crypto SigV4 presigning — no Node-specific API, works everywhere.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "build:types": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@types/node": "^18",
+    "@unitrack/conformance-kit": "^0.1.0",
+    "@unitrack/core": "^0.2.0",
+    "typescript": "^5.5.4"
+  }
+}

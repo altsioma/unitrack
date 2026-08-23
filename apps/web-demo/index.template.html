@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>unitrack web demo</title>
+  <script type="importmap">
+%%IMPORT_MAP%%
+  </script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 12px; font-size: 14px; max-width: 640px; }
+    fieldset { margin-bottom: 12px; }
+    .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .row label { min-width: 110px; }
+    .row input[type="text"], .row input[type="password"] { flex: 1; }
+    #seek, #volume { flex: 1; }
+    #queue-list { list-style: none; padding: 0; margin: 8px 0; max-height: 240px; overflow-y: auto; border: 1px solid #ccc; }
+    #queue-list li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid #eee; cursor: pointer; }
+    #queue-list li.current { background: #eef; font-weight: bold; }
+    #status { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>unitrack web demo</h1>
+  <p>Browser-only host — no Electron, no bundler. See <code>docs/superpowers/specs/2026-08-20-web-demo-design.md</code>.</p>
+
+  <fieldset>
+    <legend>Connect: Subsonic</legend>
+    <div class="row"><label for="subsonic-baseurl">Base URL</label><input type="text" id="subsonic-baseurl" placeholder="https://music.example.com"></div>
+    <div class="row"><label for="subsonic-username">Username</label><input type="text" id="subsonic-username"></div>
+    <div class="row"><label for="subsonic-password">Password</label><input type="password" id="subsonic-password"></div>
+    <button id="subsonic-connect">Connect</button>
+    <span id="subsonic-status"></span>
+  </fieldset>
+
+  <fieldset>
+    <legend>Connect: S3-compatible bucket</legend>
+    <div class="row"><label for="s3-endpoint">Endpoint</label><input type="text" id="s3-endpoint" placeholder="https://s3.amazonaws.com"></div>
+    <div class="row"><label for="s3-region">Region</label><input type="text" id="s3-region" placeholder="us-east-1"></div>
+    <div class="row"><label for="s3-bucket">Bucket</label><input type="text" id="s3-bucket"></div>
+    <div class="row"><label for="s3-access-key">Access key ID</label><input type="text" id="s3-access-key"></div>
+    <div class="row"><label for="s3-secret-key">Secret key</label><input type="password" id="s3-secret-key"></div>
+    <div class="row"><label for="s3-force-path-style">Path-style</label><input type="checkbox" id="s3-force-path-style" checked></div>
+    <button id="s3-connect">Connect</button>
+    <span id="s3-status"></span>
+  </fieldset>
+
+  <fieldset>
+    <legend>Add Track</legend>
+    <div class="row"><label for="track-title">Title</label><input type="text" id="track-title"></div>
+    <div class="row">
+      <label for="primary-provider">Primary source</label>
+      <select id="primary-provider">
+        <option value="subsonic">Subsonic</option>
+        <option value="s3">S3</option>
+        <option value="direct-url">Direct URL</option>
+      </select>
+      <input type="text" id="primary-key" placeholder="track id / object key / URL">
+    </div>
+    <div class="row">
+      <label for="fallback-provider">Fallback (optional)</label>
+      <select id="fallback-provider">
+        <option value="">none</option>
+        <option value="subsonic">Subsonic</option>
+        <option value="s3">S3</option>
+        <option value="direct-url">Direct URL</option>
+      </select>
+      <input type="text" id="fallback-key" placeholder="track id / object key / URL">
+    </div>
+    <button id="add-track">Add Track</button>
+  </fieldset>
+
+  <div class="row">
+    <button id="play">▶ Play</button>
+    <button id="pause">⏸ Pause</button>
+    <button id="stop">⏹ Stop</button>
+  </div>
+  <div class="row">
+    <label for="seek">Seek</label>
+    <input type="range" id="seek" min="0" max="0" step="1" value="0">
+    <span id="time">0:00 / 0:00</span>
+  </div>
+  <div class="row">
+    <label for="volume">Volume</label>
+    <input type="range" id="volume" min="0" max="1" step="0.01" value="1">
+  </div>
+  <p id="status">idle</p>
+  <ul id="queue-list"></ul>
+
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

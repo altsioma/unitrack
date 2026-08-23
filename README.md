@@ -59,10 +59,13 @@ first such manifest.
 | [`@unitrack/source-local-fs`](packages/plugins/desktop/source-local-fs) | `SourceProvider` for local files. Resolves a filesystem path to a `file://` URL. Node-only. |
 | [`@unitrack/playlist-local-fs`](packages/plugins/desktop/playlist-local-fs) | `PlaylistProvider` that scans a local folder for audio files. Node-only. |
 | [`@unitrack/metadata-local-fs`](packages/plugins/desktop/metadata-local-fs) | `MetadataProvider` that reads tags (and cover art) from a local audio file via `music-metadata`. Node-only. |
-| [`@unitrack/engine-web-audio`](packages/plugins/web/engine-web-audio) | `PlaybackEngine` built on a single `<audio>` element wired into a Web Audio graph. `queueAuthority: 'core'`. Browser/Electron. |
-| [`@unitrack/engine-audio-queue`](packages/plugins/web/engine-audio-queue) | `PlaybackEngine` built on two chained `<audio>` elements, pre-buffering the next track for a gapless hand-off. `queueAuthority: 'engine'`. Browser/Electron. |
+| [`@unitrack/engine-web-audio`](packages/plugins/web/engine-web-audio) | `PlaybackEngine` built on a single `<audio>` element wired into a Web Audio graph. `lookaheadPlayback: false` — Core drives load/play directly. Browser/Electron. |
+| [`@unitrack/engine-audio-queue`](packages/plugins/web/engine-audio-queue) | `PlaybackEngine` built on two chained `<audio>` elements, pre-buffering the next track for a gapless hand-off. `lookaheadPlayback: true` — accepts a revisioned `PlaybackPlan` via `setPlaybackPlan()`. Browser/Electron. |
 | [`@unitrack/source-subsonic`](packages/plugins/any/source-subsonic) | `SourceProvider` for a self-hosted Subsonic-API server. Pure `fetch` + a dependency-free MD5 — no Node-specific API, works everywhere. |
-| [`@unitrack/electron-demo`](apps/electron-demo) | Minimal Electron host — the first end-to-end proof the pipeline produces audible sound. |
+| [`@unitrack/source-s3`](packages/plugins/any/source-s3) | `SourceProvider` for an S3-compatible object storage bucket (AWS S3, MinIO, ...). Pure `fetch` + Web Crypto SigV4 presigning — no Node-specific API, works everywhere. |
+| [`@unitrack/source-direct-url`](packages/plugins/any/source-direct-url) | `SourceProvider` for a plain, already-complete, directly-fetchable URL — no auth, no factory config. `SourceRef.token.token` *is* the URL. |
+| [`@unitrack/electron-demo`](apps/electron-demo) | Minimal Electron host — the first end-to-end proof the pipeline produces audible sound. Registers `source-local-fs` (Open File/Folder) alongside `source-subsonic`, `source-s3`, and `source-direct-url` via the same connection-form / Add Track pattern proven in `@unitrack/web-demo`. |
+| [`@unitrack/web-demo`](apps/web-demo) | Minimal browser-only host — no Electron, no bundler. Plugins are served via an import map generated from each package's own `package.json.exports`. Proves the `any`/`web`-tier plugin set runs with zero Node APIs, and is the first host to register two networked `SourceProvider`s at once (a live `Resolver.js` policy-fallback demo). |
 
 `@unitrack/core` deliberately depends on nothing at runtime except its own
 `types.js` (`CONTRACT_VERSION`, the capability-key lists — real runtime
@@ -79,11 +82,18 @@ Requires Node.js >= 18 (CI verifies 20 and 22).
 npm install
 ```
 
-Run the demo app — it opens a window with an "Open File" dialog and
+Run the Electron demo — it opens a window with an "Open File" dialog and
 play/pause/stop controls:
 
 ```bash
 npm start -w @unitrack/electron-demo
+```
+
+Run the browser demo — a dev server on `http://localhost:8080` with forms
+to connect a Subsonic server and/or an S3-compatible bucket:
+
+```bash
+npm start -w @unitrack/web-demo
 ```
 
 ## Development
